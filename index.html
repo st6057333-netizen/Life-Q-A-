@@ -1,9 +1,11 @@
+html
 <!DOCTYPE html>
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>課堂 10 題即時互動投票系統</title>
+    <!-- 引入 PeerJS (免後端 P2P 即時連線) 與 QRCode.js -->
     <script src="https://unpkg.com"></script>
     <script src="https://cloudflare.com"></script>
     <style>
@@ -31,6 +33,8 @@
         .btn-success:hover { background: #15803d; }
         .btn-warning { background: var(--warning); }
         .btn-warning:hover { background: #b45309; }
+        .btn-danger { background: var(--danger); }
+        .btn-danger:hover { background: #b91c1c; }
         .btn-secondary { background: #475569; }
         .btn-secondary:hover { background: #334155; }
         .btn-sm { padding: 8px 14px; font-size: 14px; }
@@ -50,6 +54,7 @@
         .live-topbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; background: #f8fafc; padding: 12px 18px; border-radius: 12px; margin-bottom: 20px; border: 1px solid #e2e8f0; }
         .badge { padding: 6px 12px; border-radius: 20px; font-size: 14px; font-weight: bold; }
         .badge-live { background: #dcfce7; color: #166534; }
+        .badge-wait { background: #fef3c7; color: #92400e; }
         .dashboard { display: grid; grid-template-columns: 260px 1fr; gap: 28px; align-items: start; }
         @media (max-width: 800px) { .dashboard { grid-template-columns: 1fr; } }
         .qr-box { background: #f8fafc; padding: 20px; border-radius: 12px; text-align: center; border: 1px solid #e2e8f0; }
@@ -70,7 +75,9 @@
         .student-opt-btn { width: 100%; padding: 16px; margin-bottom: 12px; font-size: 17px; font-weight: bold; background: white; border: 2px solid #cbd5e1; border-radius: 12px; cursor: pointer; text-align: left; transition: 0.15s; display: flex; align-items: center; gap: 10px; }
         .student-opt-btn:hover:not(:disabled) { border-color: var(--primary); background: #eff6ff; }
         .student-opt-btn.selected { background: var(--primary); color: white; border-color: var(--primary); }
-        .student-opt-btn:disabled { cursor: default; opacity: 0.85; }
+        .student-opt-btn.correct-ans { background: var(--success) !important; color: white !important; border-color: var(--success) !important; }
+        .student-opt-btn.wrong-ans { background: var(--danger) !important; color: white !important; border-color: var(--danger) !important; }
+        .student-opt-btn:disabled { cursor: default; }
         .student-mini-bar { margin-top: 20px; padding: 16px; background: #f8fafc; border-radius: 12px; border: 1px solid #e2e8f0; }
     </style>
 </head>
@@ -81,11 +88,12 @@
     <div id="host-setup">
         <div class="header-bar">
             <div>
-                <h1 style="margin:0;">📚 課堂 10 題即時測驗設定</h1>
-                <p style="margin:6px 0 0 0; color: var(--muted);">設定每題 A、B、C、D 選項並勾選正確答案</p>
+                <h1 style="margin:0;">📚 課堂即時測驗設定</h1>
+                <p style="margin:6px 0 0 0; color: var(--muted);">設定每題 A、B、C、D 選項並勾選正確答案（自動儲存於瀏覽器）</p>
             </div>
-            <div style="display:flex; gap:8px;">
+            <div style="display:flex; gap:8px; flex-wrap:wrap;">
                 <button class="btn btn-secondary btn-sm" onclick="toggleBatchImport()">📋 批次貼上題目</button>
+                <button class="btn btn-secondary btn-sm" onclick="resetDefaultQuestions()">🔄 載入範例題庫</button>
                 <button class="btn btn-success" onclick="startSession()">🚀 開始課堂測驗</button>
             </div>
         </div>
@@ -112,7 +120,7 @@
     <div id="host-live" class="hidden">
         <div class="live-topbar">
             <div style="display:flex; align-items:center; gap:10px;">
-                <span id="conn-badge" class="badge badge-live">🟢 連線建立中...</span>
+                <span id="conn-badge" class="badge badge-wait">🟡 連線建立中...</span>
                 <span style="font-weight:bold; font-size:18px;">第 <span id="current-q-num">1</span> / <span id="total-q-num">10</span> 題</span>
             </div>
             <div style="display:flex; gap:8px; flex-wrap:wrap;">
@@ -126,375 +134,416 @@
             <div class="qr-box">
                 <div style="font-weight:bold; font-size:16px;">📱 掃描 QR Code 加入</div>
                 <div id="qrcode"></div>
-                <div style="font-size:14px; color:var(--muted);">已連線學生：<strong id="student-count">0</strong> 人</div>
-                <div style="font-size:18px; font-weight:bold; color:var(--primary); margin-top:6px;">
-                    本題已投票：<span id="live-vote-count">0</span> 人
+                <div style="font-size:14px; color:var(--muted); margin-bottom:8px;">
+                    已連線學生：<strong id="student-count" style="color:var(--primary); font-size:18px;">0</strong> 人<br>
+                    本題已作答：<strong id="vote-count" style="color:var(--success); font-size:18px;">0</strong> 人
                 </div>
+                <button class="btn btn-secondary btn-sm" style="width:100%; justify-content:center;" onclick="copyJoinLink()">🔗 複製學生加入網址</button>
+                <div id="room-id-text" style="font-size:12px; color:#94a3b8; margin-top:8px; word-break:break-all;"></div>
             </div>
 
             <div>
-                <div id="live-q-title" class="q-title-display"></div>
+                <h2 id="live-q-title" class="q-title-display">題目載入中...</h2>
                 <div id="live-bars"></div>
-                <div id="answer-summary" class="summary-box hidden"></div>
+                <div id="live-summary" class="summary-box hidden"></div>
             </div>
         </div>
     </div>
 
-    <!-- 3. 學生手機投票介面 -->
-    <div id="student-view" class="student-wrap hidden">
-        <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #e2e8f0; padding-bottom:12px; margin-bottom:16px;">
-            <span style="font-weight:bold; color:var(--primary);">📱 課堂即時投票</span>
-            <span id="stu-conn-status" style="font-size:13px; color:var(--muted);">連線中...</span>
-        </div>
-
-        <div id="stu-wait-screen" style="text-align:center; padding:40px 10px; color:var(--muted);">
-            <h3>⏳ 正在等待講師開啟題目...</h3>
-            <p>題目開始後將自動顯示於此畫面。</p>
-        </div>
-
-        <div id="stu-quiz-area" class="hidden">
-            <div style="font-size:14px; font-weight:bold; color:var(--primary); margin-bottom:6px;">
-                第 <span id="stu-q-num">1</span> / <span id="stu-total-q">10</span> 題
-            </div>
-            <h2 id="stu-q-title" style="margin-top:0; font-size:20px; line-height:1.4;"></h2>
-            <div id="stu-options"></div>
-
-            <div id="stu-result-panel" class="student-mini-bar hidden">
-                <div id="stu-feedback-banner" style="font-weight:bold; margin-bottom:12px; font-size:16px;"></div>
-目前投票結果分布：
-
-
-
-
-const LETTERS = ['A', 'B', 'C', 'D'];
-let questions = [];
-let currentQIndex = 0;
-let isRevealed = false;
-let votes =;
-let peer = null;
-let connections = [];
-// 學生端變數
-let hostConn = null;
-let stuChoice = null;
-let stuLocked = false;
-const urlParams = new URLSearchParams(window.location.search);
-const hostId = urlParams.get('host');
-if (hostId) {
-initStudent(hostId);
-} else {
-initDefaultQuestions();
-}
-// 初始化預設 10 題架構
-function initDefaultQuestions() {
-const list = document.getElementById('questions-list');
-list.innerHTML = '';
-for (let i = 0; i < 10; i++) {
-addQuestionCard(i === 0 ? {
-q: '範例題目：請問這堂課的核心概念是什麼？',
-opts: ['選項 A 內容', '選項 B 內容', '選項 C 內容', '選項 D 內容'],
+    <!-- 3. 學生手機作答區 -->
+    <div id="student-view" class="hidden">
+        <div class="student-wrap">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; border-bottom:1px solid #e2e8f0; padding-bottom:12px;">
+🟡 連線講師中...
+第 - / - 題
+正在等待講師開啟題目...
+// 預設 3 題範例（可自由增減至 10 題以上）
+const DEFAULT_QUESTIONS = [
+{
+q: "在網頁開發中，HTML 的主要用途是什麼？",
+opts: ["定義網頁的結構與內容", "控制網頁的動畫與邏輯", "設定網頁的顏色與排版", "管理後端資料庫連線"],
 ans: 0
-} : null);
+},
+{
+q: "下列哪一個 HTTP 狀態碼代表「找不到網頁（Not Found）」？",
+opts: ["200", "301", "404", "500"],
+ans: 2
+},
+{
+q: "在 JavaScript 中，宣告一個「不可重新賦值」的常數應使用哪個關鍵字？",
+opts: ["var", "let", "const", "static"],
+ans: 2
 }
+];
+let questions = [];
+let peer = null;
+let hostConnections = []; // 講師端儲存所有學生連線
+let studentConn = null;   // 學生端連向講師的連線
+// 測驗狀態
+let currentIdx = 0;
+let isRevealed = false;
+let votes = {}; // { peerId: optionIndex (0~3) }
+let myVote = null;
+// 初始化判斷：網址帶有 ?room=xxx 則進入學生模式
+window.addEventListener("DOMContentLoaded", () => {
+const params = new URLSearchParams(window.location.search);
+const roomId = params.get("room");
+if (roomId) {
+initStudentMode(roomId);
+} else {
+loadQuestionsFromStorage();
+renderQuestionCards();
 }
-function addQuestionCard(data = null) {
-const list = document.getElementById('questions-list');
-const idx = list.children.length;
-const card = document.createElement('div');
-card.className = 'q-card';
-const qVal = data ? data.q : '';
-const opts = data ? data.opts : ['', '', '', ''];
-const ans = data ? data.ans : 0;
-let optsHtml = '';
-LETTERS.forEach((letChar, i) => {
-optsHtml += `
+});
+// ================= 講師端：題庫編輯邏輯 =================
+function loadQuestionsFromStorage() {
+const saved = localStorage.getItem("classroom_quiz_questions");
+if (saved) {
+try {
+questions = JSON.parse(saved);
+if (!Array.isArray(questions) || questions.length === 0) throw new Error();
+return;
+} catch (e) {}
+}
+questions = JSON.parse(JSON.stringify(DEFAULT_QUESTIONS));
+}
+function saveQuestionsToStorage() {
+localStorage.setItem("classroom_quiz_questions", JSON.stringify(questions));
+}
+function resetDefaultQuestions() {
+if (!confirm("確定要重設為範例題庫嗎？目前的題目將會被覆蓋。")) return;
+questions = JSON.parse(JSON.stringify(DEFAULT_QUESTIONS));
+saveQuestionsToStorage();
+renderQuestionCards();
+}
+function renderQuestionCards() {
+const list = document.getElementById("questions-list");
+list.innerHTML = "";
+const labels = ["A", "B", "C", "D"];
+questions.forEach((item, idx) => {
+const card = document.createElement("div");
+card.className = "q-card";
+card.innerHTML = <div class="q-card-header"> <span>第 ${idx + 1} 題</span> <button class="btn btn-danger btn-sm" onclick="removeQuestion(${idx})">🗑️ 刪除</button> </div> <input type="text" placeholder="請輸入題目內容..." value="${escapeHtml(item.q)}" oninput="updateQuestionField(${idx}, 'q', this.value)"> <div class="options-grid"> ${[0, 1, 2, 3].map(optIdx =>
 
-${letChar}
-`;
-});
-card.innerHTML = <div class="q-card-header"> <span>第 ${idx + 1} 題</span> <button class="btn btn-secondary btn-sm" style="padding:4px 10px; font-size:12px;" onclick="this.closest('.q-card').remove(); renumberCards();">刪除</button> </div> <input type="text" class="q-in" placeholder="請輸入第 ${idx + 1} 題題目內容..." value="${qVal}"> <div class="options-grid">${optsHtml}</div>;
+<input type="radio" name="ans-${idx}" ${item.ans === optIdx ? "checked" : ""} onchange="updateQuestionField(${idx}, 'ans', ${optIdx})" title="設為正確答案">
+${labels[optIdx]}.
+
+
+).join("")} </div> ;
 list.appendChild(card);
-}
-function renumberCards() {
-document.querySelectorAll('.q-card').forEach((card, idx) => {
-card.querySelector('.q-card-header span').innerText = 第 ${idx + 1} 題;
-card.querySelectorAll('input[type="radio"]').forEach(r => r.name = ans-${idx});
 });
 }
-function toggleBatchImport() {
-document.getElementById('batch-box').classList.toggle('hidden');
+function addQuestionCard() {
+questions.push({ q: "", opts: ["", "", "", ""], ans: 0 });
+saveQuestionsToStorage();
+renderQuestionCards();
 }
-function applyBatchImport() {
-const raw = document.getElementById('batch-text').value.trim();
-if (!raw) return;
-const lines = raw.split('\n');
-const list = document.getElementById('questions-list');
-list.innerHTML = '';
-lines.forEach(line => {
-const parts = line.split('|').map(s => s.trim());
-if (parts.length >= 5) {
-const ansChar = (parts[5] || 'A').toUpperCase();
-const ansIdx = Math.max(0, LETTERS.indexOf(ansChar));
-addQuestionCard({
-q: parts[0],
-opts: [parts[1], parts[2], parts[3], parts[4]],
-ans: ansIdx
-});
-}
-});
-toggleBatchImport();
-}
-// 講師啟動測驗
-function startSession() {
-questions = [];
-document.querySelectorAll('.q-card').forEach((card) => {
-const qText = card.querySelector('.q-in').value.trim();
-const optInputs = card.querySelectorAll('.opt-in');
-const opts = Array.from(optInputs).map((input, i) => input.value.trim() || 選項 ${LETTERS[i]});
-const checkedRadio = card.querySelector('input[type="radio"]:checked');
-const ans = checkedRadio ? parseInt(checkedRadio.value) : 0;
-if (qText) {
-questions.push({ q: qText, opts: opts, ans: ans });
-}
-});
-if (questions.length === 0) {
-alert('請至少填寫一題完整的題目內容！');
+function removeQuestion(idx) {
+if (questions.length <= 1) {
+alert("至少需要保留 1 題！");
 return;
 }
-document.getElementById('host-setup').classList.add('hidden');
-document.getElementById('host-live').classList.remove('hidden');
-document.getElementById('total-q-num').innerText = questions.length;
+questions.splice(idx, 1);
+saveQuestionsToStorage();
+renderQuestionCards();
+}
+function updateQuestionField(idx, field, val) {
+questions[idx][field] = val;
+saveQuestionsToStorage();
+}
+function updateOptionField(idx, optIdx, val) {
+questions[idx].opts[optIdx] = val;
+saveQuestionsToStorage();
+}
+function toggleBatchImport() {
+document.getElementById("batch-box").classList.toggle("hidden");
+}
+function applyBatchImport() {
+const raw = document.getElementById("batch-text").value.trim();
+if (!raw) return;
+const lines = raw.split("\n");
+const parsed = [];
+const mapAns = { "A": 0, "B": 1, "C": 2, "D": 3 };
+lines.forEach(line => {
+const parts = line.split("|").map(s => s.trim());
+if (parts.length >= 6) {
+const ansChar = parts[5].toUpperCase();
+parsed.push({
+q: parts[0],
+opts: [parts[1], parts[2], parts[3], parts[4]],
+ans: mapAns[ansChar] !== undefined ? mapAns[ansChar] : 0
+});
+}
+});
+if (parsed.length === 0) {
+alert("格式解析失敗，請確認每行皆包含 6 個以 | 分隔的欄位！");
+return;
+}
+questions = parsed;
+saveQuestionsToStorage();
+renderQuestionCards();
+toggleBatchImport();
+document.getElementById("batch-text").value = "";
+}
+// ================= 講師端：即時連線與投影控制 =================
+function startSession() {
+// 檢查題目完整性
+for (let i = 0; i < questions.length; i++) {
+if (!questions[i].q.trim()) {
+alert(第 ${i + 1} 題尚未填寫題目內容！);
+return;
+}
+}
+document.getElementById("host-setup").classList.add("hidden");
+document.getElementById("host-live").classList.remove("hidden");
+currentIdx = 0;
+isRevealed = false;
+votes = {};
+// 建立 PeerJS 房間
 if (!peer) {
 peer = new Peer();
-peer.on('open', (id) => {
-document.getElementById('conn-badge').innerText = '🟢 測驗連線已就緒';
-const joinUrl = ${window.location.origin}${window.location.pathname}?host=${id};
-document.getElementById('qrcode').innerHTML = '';
-new QRCode(document.getElementById('qrcode'), {
+peer.on("open", (id) => {
+const badge = document.getElementById("conn-badge");
+badge.className = "badge badge-live";
+badge.textContent = "🟢 教室已開啟";
+document.getElementById("room-id-text").textContent = "教室代碼：" + id;
+const joinUrl = getJoinUrl(id);
+const qrContainer = document.getElementById("qrcode");
+qrContainer.innerHTML = "";
+new QRCode(qrContainer, {
 text: joinUrl,
 width: 180,
 height: 180
 });
 });
-peer.on('connection', (conn) => {
-connections.push(conn);
+peer.on("connection", (conn) => {
+hostConnections.push(conn);
 updateStudentCount();
-conn.on('open', () => {
+conn.on("open", () => {
+// 新學生加入時，立刻同步目前題目狀態
 sendStateToStudent(conn);
 });
-conn.on('data', (msg) => {
-if (msg.type === 'VOTE' && !isRevealed && msg.qIndex === currentQIndex) {
-if (msg.oldChoice !== null && msg.oldChoice !== undefined) {
-votes[msg.oldChoice] = Math.max(0, votes[msg.oldChoice] - 1);
-}
-votes[msg.newChoice]++;
-renderLiveChart();
-broadcastVotes();
+conn.on("data", (data) => {
+if (data.type === "VOTE" && !isRevealed && data.qIdx === currentIdx) {
+votes[conn.peer] = data.choice;
+renderLiveDashboard();
 }
 });
-conn.on('close', () => {
-connections = connections.filter(c => c !== conn);
+conn.on("close", () => {
+hostConnections = hostConnections.filter(c => c.peer !== conn.peer);
 updateStudentCount();
 });
 });
 }
-loadQuestion(0);
+renderLiveDashboard();
+broadcastState();
+}
+function getJoinUrl(roomId) {
+const url = new URL(window.location.href);
+url.searchParams.set("room", roomId);
+return url.toString();
+}
+function copyJoinLink() {
+if (!peer || !peer.id) return;
+const url = getJoinUrl(peer.id);
+navigator.clipboard.writeText(url).then(() => {
+alert("已複製學生加入網址！可直接貼給學生或開新分頁測試。");
+});
 }
 function updateStudentCount() {
-const active = connections.filter(c => c.open).length;
-document.getElementById('student-count').innerText = active;
+document.getElementById("student-count").textContent = hostConnections.length;
 }
-function loadQuestion(index) {
-currentQIndex = index;
-isRevealed = false;
-votes =;
-document.getElementById('current-q-num').innerText = index + 1;
-document.getElementById('live-q-title').innerText = ${index + 1}. ${questions[index].q};
-document.getElementById('btn-reveal').classList.remove('hidden');
-document.getElementById('btn-next').classList.add('hidden');
-document.getElementById('answer-summary').classList.add('hidden');
-renderLiveChart();
-broadcastState();
+function renderLiveDashboard() {
+const qObj = questions[currentIdx];
+document.getElementById("current-q-num").textContent = currentIdx + 1;
+document.getElementById("total-q-num").textContent = questions.length;
+document.getElementById("live-q-title").textContent = ${currentIdx + 1}. ${qObj.q};
+const counts =;
+const voteValues = Object.values(votes);
+voteValues.forEach(v => { if (counts[v] !== undefined) counts[v]++; });
+const totalVotes = voteValues.length;
+document.getElementById("vote-count").textContent = totalVotes;
+const labels = ["A", "B", "C", "D"];
+const barsContainer = document.getElementById("live-bars");
+barsContainer.innerHTML = "";
+qObj.opts.forEach((optText, idx) => {
+const count = counts[idx];
+const pct = totalVotes > 0 ? Math.round((count / totalVotes) * 100) : 0;
+let barClass = "bar-fill";
+let mark = "";
+if (isRevealed) {
+if (idx === qObj.ans) {
+barClass += " correct";
+mark = " ✅ (正確答案)";
+} else {
+barClass += " dimmed";
+}
+}
+barsContainer.innerHTML += <div class="bar-item"> <div class="bar-header"> <span>${labels[idx]}. ${escapeHtml(optText)}${mark}</span> <span>${count} 票 (${pct}%)</span> </div> <div class="bar-bg"> <div class="${barClass}" style="width: ${pct}%;"></div> </div> </div>;
+});
+// 按鈕與總結狀態切換
+const btnReveal = document.getElementById("btn-reveal");
+const btnNext = document.getElementById("btn-next");
+const summaryBox = document.getElementById("live-summary");
+if (!isRevealed) {
+btnReveal.classList.remove("hidden");
+btnNext.classList.add("hidden");
+summaryBox.classList.add("hidden");
+} else {
+btnReveal.classList.add("hidden");
+summaryBox.classList.remove("hidden");
+const correctCount = counts[qObj.ans];
+const acc = totalVotes > 0 ? Math.round((correctCount / totalVotes) * 100) : 0;
+summaryBox.textContent = 📊 統計結果：正確答案為 ${labels[qObj.ans]}，共 ${correctCount} 人答對（答對率 ${acc}%）;
+if (currentIdx < questions.length - 1) {
+btnNext.textContent = "➡️ 講解完畢，進入下一題";
+btnNext.classList.remove("hidden");
+} else {
+btnNext.textContent = "🏁 測驗結束（重新開始）";
+btnNext.classList.remove("hidden");
+}
+}
 }
 function revealAnswer() {
 isRevealed = true;
-document.getElementById('btn-reveal').classList.add('hidden');
-const btnNext = document.getElementById('btn-next');
-if (currentQIndex < questions.length - 1) {
-btnNext.innerText = '➡️ 講解完畢，進入下一題';
-btnNext.classList.remove('hidden');
-} else {
-btnNext.innerText = '🎉 全部題目講解完畢（返回題庫）';
-btnNext.classList.remove('hidden');
-}
-const qObj = questions[currentQIndex];
-const total = votes.reduce((a, b) => a + b, 0);
-const correctCount = votes[qObj.ans];
-const rate = total === 0 ? 0 : Math.round((correctCount / total) * 100);
-const summary = document.getElementById('answer-summary');
-summary.innerHTML = ✅ 正確答案：<strong>(${LETTERS[qObj.ans]}) ${qObj.opts[qObj.ans]}</strong> ｜ 全班答對率：<strong>${rate}%</strong>（${correctCount}/${total} 人）;
-summary.classList.remove('hidden');
-renderLiveChart();
+renderLiveDashboard();
 broadcastState();
 }
 function nextQuestion() {
-if (currentQIndex < questions.length - 1) {
-loadQuestion(currentQIndex + 1);
+if (currentIdx < questions.length - 1) {
+currentIdx++;
+isRevealed = false;
+votes = {};
+renderLiveDashboard();
+broadcastState();
 } else {
-backToSetup();
+if (confirm("已經是最後一題了！要從第 1 題重新開始測驗嗎？")) {
+currentIdx = 0;
+isRevealed = false;
+votes = {};
+renderLiveDashboard();
+broadcastState();
+}
 }
 }
 function backToSetup() {
-document.getElementById('host-live').classList.add('hidden');
-document.getElementById('host-setup').classList.remove('hidden');
+if (!confirm("返回題庫將會中斷目前的投影畫面，確定要返回嗎？")) return;
+document.getElementById("host-live").classList.add("hidden");
+document.getElementById("host-setup").classList.remove("hidden");
 }
-function renderLiveChart() {
-const container = document.getElementById('live-bars');
-container.innerHTML = '';
-const total = votes.reduce((a, b) => a + b, 0);
-document.getElementById('live-vote-count').innerText = total;
-const qObj = questions[currentQIndex];
-qObj.opts.forEach((opt, i) => {
-const count = votes[i];
-const pct = total === 0 ? 0 : Math.round((count / total) * 100);
-let fillClass = 'bar-fill';
-if (isRevealed) {
-fillClass += (i === qObj.ans) ? ' correct' : ' dimmed';
-}
-const div = document.createElement('div');
-div.className = 'bar-item';
-div.innerHTML = <div class="bar-header"> <span>(${LETTERS[i]}) ${opt} ${isRevealed && i === qObj.ans ? '✅' : ''}</span> <span>${count} 票 (${pct}%)</span> </div> <div class="bar-bg"> <div class="${fillClass}" style="width: ${pct}%;"></div> </div>;
-container.appendChild(div);
-});
-}
-function sendStateToStudent(conn) {
-if (!conn.open) return;
-const qObj = questions[currentQIndex];
-conn.send({
-type: 'STATE_UPDATE',
-qIndex: currentQIndex,
-totalQ: questions.length,
+function getPayloadForStudent() {
+const qObj = questions[currentIdx];
+return {
+type: "SYNC",
+qIdx: currentIdx,
+total: questions.length,
 q: qObj.q,
 opts: qObj.opts,
 isRevealed: isRevealed,
-ans: isRevealed ? qObj.ans : null,
-votes: votes
-});
+ans: isRevealed ? qObj.ans : null
+};
+}
+function sendStateToStudent(conn) {
+if (conn.open) {
+conn.send(getPayloadForStudent());
+}
 }
 function broadcastState() {
-connections.forEach(c => sendStateToStudent(c));
-}
-function broadcastVotes() {
-connections.forEach(c => {
-if (c.open) {
-c.send({ type: 'VOTES_UPDATE', votes: votes });
-}
+const payload = getPayloadForStudent();
+hostConnections.forEach(conn => {
+if (conn.open) conn.send(payload);
 });
 }
-// ==================== 學生端邏輯 ====================
-function initStudent(targetId) {
-document.getElementById('host-setup').classList.add('hidden');
-document.getElementById('student-view').classList.remove('hidden');
+// ================= 學生端：連線與作答邏輯 =================
+function initStudentMode(roomId) {
+document.getElementById("host-setup").classList.add("hidden");
+document.getElementById("student-view").classList.remove("hidden");
 peer = new Peer();
-peer.on('open', () => {
-hostConn = peer.connect(targetId);
-hostConn.on('open', () => {
-document.getElementById('stu-conn-status').innerText = '🟢 已連線';
+peer.on("open", () => {
+studentConn = peer.connect(roomId);
+studentConn.on("open", () => {
+const badge = document.getElementById("stu-conn-badge");
+badge.className = "badge badge-live";
+badge.textContent = "🟢 已連線至教室";
 });
-hostConn.on('data', (msg) => {
-if (msg.type === 'STATE_UPDATE') {
-renderStudentQuestion(msg);
-} else if (msg.type === 'VOTES_UPDATE') {
-updateStudentMiniBars(msg.votes);
+studentConn.on("data", (data) => {
+if (data.type === "SYNC") {
+renderStudentQuestion(data);
 }
 });
-hostConn.on('close', () => {
-document.getElementById('stu-conn-status').innerText = '🔴 連線已中斷，請重新掃描';
+studentConn.on("close", () => {
+const badge = document.getElementById("stu-conn-badge");
+badge.className = "badge badge-wait";
+badge.textContent = "🔴 與講師斷線，請重新整理";
 });
 });
 }
-let stuCurrentQIndex = -1;
-let stuCurrentOpts = [];
-let stuRevealedAns = null;
-function renderStudentQuestion(state) {
-document.getElementById('stu-wait-screen').classList.add('hidden');
-document.getElementById('stu-quiz-area').classList.remove('hidden');
-if (stuCurrentQIndex !== state.qIndex) {
-stuChoice = null;
-stuCurrentQIndex = state.qIndex;
+let lastRenderedQIdx = -1;
+function renderStudentQuestion(data) {
+// 若換新題目，重置學生選項紀錄
+if (data.qIdx !== lastRenderedQIdx) {
+myVote = null;
+lastRenderedQIdx = data.qIdx;
 }
-stuLocked = state.isRevealed;
-stuCurrentOpts = state.opts;
-stuRevealedAns = state.ans;
-document.getElementById('stu-q-num').innerText = state.qIndex + 1;
-document.getElementById('stu-total-q').innerText = state.totalQ;
-document.getElementById('stu-q-title').innerText = state.q;
-const optContainer = document.getElementById('stu-options');
-optContainer.innerHTML = '';
-state.opts.forEach((opt, i) => {
-const btn = document.createElement('button');
-btn.className = 'student-opt-btn';
-if (stuChoice === i) btn.classList.add('selected');
-btn.disabled = stuLocked;
-btn.innerHTML = <span>(${LETTERS[i]})</span> <span>${opt}</span>;
-btn.onclick = () => {
-if (stuLocked) return;
-const old = stuChoice;
-stuChoice = i;
-document.querySelectorAll('.student-opt-btn').forEach(b => b.classList.remove('selected'));
-btn.classList.add('selected');
-if (hostConn && hostConn.open) {
-hostConn.send({
-type: 'VOTE',
-qIndex: stuCurrentQIndex,
-oldChoice: old,
-newChoice: i
-});
+document.getElementById("stu-q-num").textContent = data.qIdx + 1;
+document.getElementById("stu-total-num").textContent = data.total;
+document.getElementById("stu-q-title").textContent = ${data.qIdx + 1}. ${data.q};
+const labels = ["A", "B", "C", "D"];
+const optContainer = document.getElementById("stu-options");
+optContainer.innerHTML = "";
+data.opts.forEach((optText, idx) => {
+const btn = document.createElement("button");
+btn.className = "student-opt-btn";
+btn.disabled = data.isRevealed;
+if (!data.isRevealed) {
+if (myVote === idx) btn.classList.add("selected");
+btn.onclick = () => submitStudentVote(data.qIdx, idx, data);
+} else {
+// 已公布正解
+if (idx === data.ans) {
+btn.classList.add("correct-ans");
+} else if (myVote === idx && myVote !== data.ans) {
+btn.classList.add("wrong-ans");
 }
-document.getElementById('stu-result-panel').classList.remove('hidden');
-updateStudentFeedbackBanner();
-updateStudentMiniBars(state.votes);
-};
+}
+btn.innerHTML = <span>${labels[idx]}.</span> <span>${escapeHtml(optText)}</span>;
 optContainer.appendChild(btn);
 });
-if (stuChoice !== null || stuLocked) {
-document.getElementById('stu-result-panel').classList.remove('hidden');
-updateStudentFeedbackBanner();
-updateStudentMiniBars(state.votes);
+const statusMsg = document.getElementById("stu-status-msg");
+if (!data.isRevealed) {
+if (myVote !== null) {
+statusMsg.classList.remove("hidden");
+statusMsg.innerHTML = ✅ 你已選擇 <strong>${labels[myVote]}</strong>（公布答案前可隨時更改）;
 } else {
-document.getElementById('stu-result-panel').classList.add('hidden');
+statusMsg.classList.add("hidden");
 }
-}
-function updateStudentFeedbackBanner() {
-const banner = document.getElementById('stu-feedback-banner');
-if (!stuLocked) {
-banner.style.color = '#1e40af';
-banner.innerText = '✅ 投票已送出！請等待講師講解（公布答案前可更改選項）';
 } else {
-if (stuChoice === stuRevealedAns) {
-banner.style.color = '#16a34a';
-banner.innerText = 🎉 答對了！正確答案是 (${LETTERS[stuRevealedAns]})，請等待講師切換下一題。;
-} else if (stuChoice !== null) {
-banner.style.color = '#dc2626';
-banner.innerText = ❌ 答錯囉！正確答案是 (${LETTERS[stuRevealedAns]})，請等待講師切換下一題。;
+statusMsg.classList.remove("hidden");
+if (myVote === null) {
+statusMsg.innerHTML = ⏰ 本題已結束投票！正確答案為 <strong>${labels[data.ans]}</strong>;
+} else if (myVote === data.ans) {
+statusMsg.innerHTML = 🎉 <strong>答對了！</strong> 正確答案就是 ${labels[data.ans]};
 } else {
-banner.style.color = '#d97706';
-banner.innerText = ⏰ 本題投票已結束！正確答案是 (${LETTERS[stuRevealedAns]})，等待講師切換下一題。;
+statusMsg.innerHTML = ❌ <strong>答錯了！</strong> 你選了 ${labels[myVote]}，正確答案為 <strong>${labels[data.ans]}</strong>;
 }
 }
 }
-function updateStudentMiniBars(votesArr) {
-const container = document.getElementById('stu-mini-bars');
-if (!container || document.getElementById('stu-result-panel').classList.contains('hidden')) return;
-container.innerHTML = '';
-const total = votesArr.reduce((a, b) => a + b, 0);
-stuCurrentOpts.forEach((opt, i) => {
-const count = votesArr[i] || 0;
-const pct = total === 0 ? 0 : Math.round((count / total) * 100);
-const isAns = stuLocked && i === stuRevealedAns;
-const barColor = isAns ? '#16a34a' : (stuChoice === i ? '#2563eb' : '#94a3b8');
-const row = document.createElement('div');
-row.style.marginBottom = '10px';
-row.innerHTML = <div style="display:flex; justify-content:space-between; font-size:14px; font-weight:bold; margin-bottom:4px;"> <span>(${LETTERS[i]}) ${opt} ${isAns ? '✅' : ''}</span> <span>${pct}% (${count}票)</span> </div> <div style="width:100%; height:14px; background:#e2e8f0; border-radius:6px; overflow:hidden;"> <div style="width:${pct}%; height:100%; background:${barColor}; transition:width 0.3s;"></div> </div>;
-container.appendChild(row);
+function submitStudentVote(qIdx, choiceIdx, currentData) {
+myVote = choiceIdx;
+if (studentConn && studentConn.open) {
+studentConn.send({
+type: "VOTE",
+qIdx: qIdx,
+choice: choiceIdx
 });
+}
+renderStudentQuestion(currentData);
+}
+// 防止 XSS 跳脫字元
+function escapeHtml(str) {
+if (!str) return "";
+return str.replace(/&/g, "&")
+.replace(/</g, "<")
+.replace(/>/g, ">")
+.replace(/"/g, """);
 }
