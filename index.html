@@ -338,16 +338,7 @@
         document.getElementById('host-live').classList.remove('hidden');
 
         if (!peer) {
-            // 加入 Google 公開 STUN 伺服器，確保手機行動網路也能順利連入
-            peer = new Peer({
-                config: {
-                    iceServers: [
-                        { urls: 'stun:://google.com' },
-                        { urls: 'stun:://google.com' }
-                    ]
-                }
-            });
-
+            peer = new Peer();
             peer.on('open', (id) => {
                 const joinUrl = `${window.location.origin}${window.location.pathname}?host=${id}`;
                 document.getElementById('share-url').innerText = joinUrl;
@@ -357,23 +348,15 @@
             });
 
             peer.on('connection', (conn) => {
-                // 避免重複加入同一個連線
-                if (!studentConnections.includes(conn)) {
-                    studentConnections.push(conn);
-                }
+                studentConnections.push(conn);
+                updateOnlineCount();
 
                 conn.on('open', () => {
-                    updateOnlineCount(); // 連線真正開啟後再更新線上人數
                     sendStateToStudent(conn);
                 });
 
                 conn.on('data', (msg) => {
-                    // 1. 回應學生端主動請求目前題目的訊息
-                    if (msg.type === 'REQUEST_STATE') {
-                        sendStateToStudent(conn);
-                    } 
-                    // 2. 處理學生投票
-                    else if (msg.type === 'VOTE' && msg.qIndex === currentQIndex && !isRevealed) {
+                    if (msg.type === 'VOTE' && msg.qIndex === currentQIndex && !isRevealed) {
                         const q = questions[currentQIndex];
                         if (msg.oldIndex !== null && msg.oldIndex !== undefined) {
                             q.votes[msg.oldIndex] = Math.max(0, q.votes[msg.oldIndex] - 1);
@@ -385,11 +368,6 @@
                 });
 
                 conn.on('close', () => {
-                    studentConnections = studentConnections.filter(c => c !== conn);
-                    updateOnlineCount();
-                });
-
-                conn.on('error', () => {
                     studentConnections = studentConnections.filter(c => c !== conn);
                     updateOnlineCount();
                 });
@@ -473,7 +451,7 @@
     }
 
     function resetCurrentVotes() {
-        questions[currentQIndex].votes =;
+        questions[currentQIndex].votes = [0, 0, 0, 0];
         isRevealed = false;
         loadQuestion(currentQIndex);
     }
@@ -523,7 +501,6 @@
 
     function getPayloadForStudent() {
         const q = questions[currentQIndex];
-        if (!q) return null;
         return {
             qIndex: currentQIndex,
             totalQ: questions.length,
@@ -536,15 +513,13 @@
     }
 
     function sendStateToStudent(conn) {
-        const payload = getPayloadForStudent();
-        if (conn && conn.open && payload) {
-            conn.send({ type: 'SYNC_STATE', data: payload });
+        if (conn.open) {
+            conn.send({ type: 'SYNC_STATE', data: getPayloadForStudent() });
         }
     }
 
     function broadcastFullState() {
         const payload = getPayloadForStudent();
-        if (!payload) return;
         studentConnections.forEach(conn => {
             if (conn.open) conn.send({ type: 'SYNC_STATE', data: payload });
         });
@@ -552,118 +527,51 @@
 
     function broadcastVotesUpdate() {
         const q = questions[currentQIndex];
-        if (!q) return;
         studentConnections.forEach(conn => {
             if (conn.open) {
                 conn.send({ type: 'VOTES_UPDATE', qIndex: currentQIndex, votes: q.votes });
             }
         });
     }
-  // ================= 學生端邏輯 =================
+
+    // ================= 學生端邏輯 =================
     let studentCurrentQIndex = -1;
     let latestState = null;
-    let currentTargetHostId = null;
-    let isReconnecting = false;
-    let stateRetryTimer = null;
 
     function initStudentMode(targetHostId) {
-        currentTargetHostId = targetHostId;
         document.getElementById('host-setup').classList.add('hidden');
         document.getElementById('student-view').classList.remove('hidden');
 
-        // 加入 Google 公開 STUN 伺服器，解決手機 4G/5G 與教室 Wi-Fi 跨網段無法連線作答的問題
-        peer = new Peer({
-            config: {
-                iceServers: [
-                    { urls: 'stun:://google.com' },
-                    { urls: 'stun:://google.com' }
-                ]
-            }
-        });
-
+        peer = new Peer();
         peer.on('open', () => {
-            connectToHost(targetHostId);
-        });
+            hostConnection = peer.connect(targetHostId);
+            
+            hostConnection.on('open', () => {
+                document.getElementById('student-conn-status').innerText = '🟢 已連線至課堂';
+            });
 
-        peer.on('error', (err) => {
-            console.error('PeerJS 連線錯誤:', err);
-            const statusEl = document.getElementById('student-conn-status');
-            statusEl.innerText = '🔴 連線異常，請重新整理或重新掃碼';
-            statusEl.style.color = '#dc2626';
-        });
-    }
-
-    function connectToHost(targetHostId) {
-        if (!peer || peer.disconnected) return;
-
-        const statusEl = document.getElementById('student-conn-status');
-        statusEl.innerText = '🟡 正在連線至課堂...';
-        statusEl.style.color = '#d97706';
-
-        hostConnection = peer.connect(targetHostId, { reliable: true });
-
-        hostConnection.on('open', () => {
-            isReconnecting = false;
-            statusEl.innerText = '🟢 已連線至課堂';
-            statusEl.style.color = '#16a34a';
-
-            // 連線開啟後立即向講師端請求目前題目，並啟動定時重試直到收到題目
-            requestStateWithRetry();
-        });
-
-        hostConnection.on('data', (msg) => {
-            if (msg.type === 'SYNC_STATE') {
-                latestState = msg.data;
-
-                // 成功收到題目後停止重試計時器
-                if (stateRetryTimer) {
-                    clearInterval(stateRetryTimer);
-                    stateRetryTimer = null;
+            hostConnection.on('data', (msg) => {
+                if (msg.type === 'SYNC_STATE') {
+                    latestState = msg.data;
+                    // 若換了新題目，重置學生的作答狀態
+                    if (studentCurrentQIndex !== latestState.qIndex) {
+                        studentCurrentQIndex = latestState.qIndex;
+                        studentChoice = null;
+                    }
+                    renderStudentUI();
+                } else if (msg.type === 'VOTES_UPDATE' && latestState && msg.qIndex === latestState.qIndex) {
+                    latestState.votes = msg.votes;
+                    if (studentChoice !== null || latestState.isRevealed) {
+                        renderStudentResultBars();
+                    }
                 }
+            });
 
-                // 若換了新題目，重置學生的作答狀態
-                if (studentCurrentQIndex !== latestState.qIndex) {
-                    studentCurrentQIndex = latestState.qIndex;
-                    studentChoice = null;
-                }
-                renderStudentUI();
-            } else if (msg.type === 'VOTES_UPDATE' && latestState && msg.qIndex === latestState.qIndex) {
-                latestState.votes = msg.votes;
-                if (studentChoice !== null || latestState.isRevealed) {
-                    renderStudentResultBars();
-                }
-            }
+            hostConnection.on('close', () => {
+                document.getElementById('student-conn-status').innerText = '🔴 連線已中斷，請重新掃碼';
+                document.getElementById('student-conn-status').style.color = '#dc2626';
+            });
         });
-
-        hostConnection.on('close', () => {
-            if (stateRetryTimer) clearInterval(stateRetryTimer);
-            statusEl.innerText = '🔴 連線已中斷，點擊選項將嘗試自動重連';
-            statusEl.style.color = '#dc2626';
-        });
-
-        hostConnection.on('error', (err) => {
-            console.error('Host 連線錯誤:', err);
-            statusEl.innerText = '🔴 連線發生錯誤，請重新掃碼';
-            statusEl.style.color = '#dc2626';
-        });
-    }
-
-    function requestStateWithRetry() {
-        if (stateRetryTimer) clearInterval(stateRetryTimer);
-
-        const sendRequest = () => {
-            if (latestState) {
-                clearInterval(stateRetryTimer);
-                stateRetryTimer = null;
-                return;
-            }
-            if (hostConnection && hostConnection.open) {
-                hostConnection.send({ type: 'REQUEST_STATE' });
-            }
-        };
-
-        sendRequest(); // 立刻發送第一次請求
-        stateRetryTimer = setInterval(sendRequest, 1500); // 若未收到題目，每 1.5 秒自動重試
     }
 
     function renderStudentUI() {
@@ -676,9 +584,8 @@
 
         latestState.options.forEach((opt, idx) => {
             const btn = document.createElement('button');
-            btn.type = 'button'; // 防止誤觸發頁面重新整理
             btn.className = 'option-btn';
-
+            
             if (latestState.isRevealed) {
                 btn.disabled = true;
                 if (idx === latestState.correctIndex) {
@@ -695,25 +602,16 @@
             btn.innerHTML = `<span>(${LETTERS[idx]})</span> <span>${escapeHtml(opt)}</span>`;
             btn.onclick = () => {
                 if (latestState.isRevealed) return;
-
-                // 若因手機休眠或切換畫面導致斷線，主動提示並自動重新連線
-                if (!hostConnection || !hostConnection.open) {
-                    alert('與講師的連線已暫時中斷，正在為您重新連線，請在顯示「🟢 已連線至課堂」後再點選一次答案！');
-                    if (!isReconnecting && currentTargetHostId) {
-                        isReconnecting = true;
-                        connectToHost(currentTargetHostId);
-                    }
-                    return;
+                if (hostConnection && hostConnection.open) {
+                    hostConnection.send({
+                        type: 'VOTE',
+                        qIndex: latestState.qIndex,
+                        oldIndex: studentChoice,
+                        newIndex: idx
+                    });
+                    studentChoice = idx;
+                    renderStudentUI();
                 }
-
-                hostConnection.send({
-                    type: 'VOTE',
-                    qIndex: latestState.qIndex,
-                    oldIndex: studentChoice,
-                    newIndex: idx
-                });
-                studentChoice = idx;
-                renderStudentUI();
             };
             optionsContainer.appendChild(btn);
         });
@@ -721,7 +619,7 @@
         // 只要學生已經選了選項，或是講師已經公布正解，就立刻顯示即時投票分布圖
         const resultsBox = document.getElementById('student-results');
         const banner = document.getElementById('student-status-banner');
-
+        
         if (studentChoice !== null || latestState.isRevealed) {
             resultsBox.classList.remove('hidden');
             renderStudentResultBars();
@@ -754,7 +652,7 @@
         if (!latestState) return;
         const total = latestState.votes.reduce((a, b) => a + b, 0);
         document.getElementById('student-total-votes').innerText = `共 ${total} 票`;
-
+        
         const barsContainer = document.getElementById('student-bars');
         barsContainer.innerHTML = '';
 
