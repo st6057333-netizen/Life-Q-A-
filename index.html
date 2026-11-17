@@ -3,546 +3,679 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>課堂 10 題即時互動投票系統</title>
-    <!-- 引入 PeerJS (免後端 P2P 即時連線) 與 QRCode.js -->
-    <script src="https://unpkg.com"></script>
-    <script src="https://cloudflare.com"></script>
+    <title>課堂多題即時互動測驗系統（10題四選一）</title>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <style>
         :root {
             --primary: #2563eb;
             --primary-hover: #1d4ed8;
-            --success: #16a34a;
-            --warning: #d97706;
-            --danger: #dc2626;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --danger: #ef4444;
             --bg: #f1f5f9;
             --card: #ffffff;
-            --text: #0f172a;
-            --muted: #64748b;
+            --text: #1e293b;
+            --border: #cbd5e1;
         }
-        * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Microsoft JhengHei", sans-serif; }
-        body { margin: 0; padding: 16px; background-color: var(--bg); color: var(--text); display: flex; justify-content: center; }
-        .container { width: 100%; max-width: 1000px; background: var(--card); padding: 28px; border-radius: 16px; box-shadow: 0 4px 24px rgba(0,0,0,0.06); }
+        * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+        body { margin: 0; padding: 20px; background-color: var(--bg); color: var(--text); display: flex; justify-content: center; }
+        .container { width: 100%; max-width: 1000px; background: var(--card); padding: 30px; border-radius: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); }
+        h1, h2, h3 { margin-top: 0; color: #0f172a; }
         .hidden { display: none !important; }
         
         /* 按鈕樣式 */
         .btn { background: var(--primary); color: white; border: none; padding: 12px 20px; font-size: 16px; font-weight: bold; border-radius: 8px; cursor: pointer; transition: 0.2s; display: inline-flex; align-items: center; gap: 6px; }
-        .btn:hover { background: var(--primary-hover); }
-        .btn:disabled { background: #94a3b8; cursor: not-allowed; }
+        .btn:hover:not(:disabled) { background: var(--primary-hover); }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
         .btn-success { background: var(--success); }
-        .btn-success:hover { background: #15803d; }
-        .btn-warning { background: var(--warning); }
-        .btn-warning:hover { background: #b45309; }
+        .btn-success:hover:not(:disabled) { background: #059669; }
+        .btn-warning { background: var(--warning); color: #fff; }
+        .btn-warning:hover:not(:disabled) { background: #d97706; }
+        .btn-secondary { background: #64748b; }
+        .btn-secondary:hover:not(:disabled) { background: #475569; }
         .btn-danger { background: var(--danger); }
-        .btn-danger:hover { background: #b91c1c; }
-        .btn-secondary { background: #475569; }
-        .btn-secondary:hover { background: #334155; }
-        .btn-sm { padding: 8px 14px; font-size: 14px; }
+        .btn-danger:hover:not(:disabled) { background: #dc2626; }
+        .btn-sm { padding: 6px 12px; font-size: 14px; }
 
-        /* 講師出題列表 */
-        .header-bar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 20px; border-bottom: 2px solid #e2e8f0; padding-bottom: 16px; }
-        .q-card { border: 1px solid #cbd5e1; border-radius: 12px; padding: 18px; margin-bottom: 16px; background: #f8fafc; }
-        .q-card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; font-weight: bold; color: var(--primary); }
-        input[type="text"], textarea { width: 100%; padding: 10px 12px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 15px; }
+        /* 講師出題列表區 */
+        .question-card { border: 2px solid #e2e8f0; border-radius: 12px; padding: 20px; margin-bottom: 20px; background: #f8fafc; position: relative; }
+        .question-card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+        .q-badge { background: var(--primary); color: white; padding: 4px 12px; border-radius: 20px; font-weight: bold; font-size: 14px; }
+        input[type="text"], textarea { width: 100%; padding: 10px 12px; border: 2px solid var(--border); border-radius: 8px; font-size: 15px; }
         input[type="text"]:focus, textarea:focus { border-color: var(--primary); outline: none; }
-        .options-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
-        @media (max-width: 640px) { .options-grid { grid-template-columns: 1fr; } }
-        .opt-row { display: flex; align-items: center; gap: 8px; background: white; padding: 6px 10px; border-radius: 8px; border: 1px solid #e2e8f0; }
-        .opt-label { font-weight: bold; color: var(--muted); width: 24px; }
+        .options-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+        @media (max-width: 768px) { .options-grid { grid-template-columns: 1fr; } }
+        .option-row { display: flex; align-items: center; gap: 8px; background: white; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border); }
+        .option-letter { font-weight: bold; color: var(--primary); width: 24px; }
+        .option-row input[type="text"] { border: none; padding: 4px; }
+        .option-row input[type="text"]:focus { outline: none; }
+        .correct-label { display: flex; align-items: center; gap: 4px; font-size: 13px; color: #059669; font-weight: bold; white-space: nowrap; cursor: pointer; }
 
-        /* 講師即時投影區 */
-        .live-topbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; background: #f8fafc; padding: 12px 18px; border-radius: 12px; margin-bottom: 20px; border: 1px solid #e2e8f0; }
-        .badge { padding: 6px 12px; border-radius: 20px; font-size: 14px; font-weight: bold; }
-        .badge-live { background: #dcfce7; color: #166534; }
-        .badge-wait { background: #fef3c7; color: #92400e; }
-        .dashboard { display: grid; grid-template-columns: 260px 1fr; gap: 28px; align-items: start; }
-        @media (max-width: 800px) { .dashboard { grid-template-columns: 1fr; } }
-        .qr-box { background: #f8fafc; padding: 20px; border-radius: 12px; text-align: center; border: 1px solid #e2e8f0; }
-        #qrcode { display: flex; justify-content: center; margin: 12px auto; background: white; padding: 10px; border-radius: 10px; width: fit-content; }
+        /* 投影展示區 */
+        .top-bar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; padding-bottom: 16px; border-bottom: 2px solid #e2e8f0; margin-bottom: 24px; }
+        .progress-pill { background: #dbeafe; color: #1e40af; padding: 8px 16px; border-radius: 20px; font-weight: bold; font-size: 16px; }
+        .status-pill { padding: 8px 16px; border-radius: 20px; font-weight: bold; font-size: 14px; }
+        .status-voting { background: #dcfce7; color: #166534; }
+        .status-locked { background: #fef3c7; color: #92400e; }
         
-        /* 長條圖與統計 */
-        .q-title-display { font-size: 26px; font-weight: bold; margin: 0 0 20px 0; line-height: 1.4; }
+        .dashboard { display: grid; grid-template-columns: 250px 1fr; gap: 30px; align-items: start; }
+        @media (max-width: 768px) { .dashboard { grid-template-columns: 1fr; } }
+        .qr-panel { background: #f8fafc; border: 2px solid #e2e8f0; padding: 20px; border-radius: 12px; text-align: center; }
+        #qrcode { display: flex; justify-content: center; margin: 12px 0; background: white; padding: 10px; border-radius: 8px; }
+        
+        /* 長條圖樣式 */
         .bar-item { margin-bottom: 18px; }
         .bar-header { display: flex; justify-content: space-between; font-weight: bold; margin-bottom: 6px; font-size: 18px; }
-        .bar-bg { width: 100%; height: 40px; background: #e2e8f0; border-radius: 10px; overflow: hidden; }
-        .bar-fill { height: 100%; background: var(--primary); width: 0%; transition: width 0.4s ease; }
-        .bar-fill.correct { background: var(--success) !important; }
-        .bar-fill.dimmed { background: #94a3b8 !important; }
-        .summary-box { margin-top: 20px; padding: 16px; border-radius: 10px; background: #eff6ff; border: 1px solid #bfdbfe; font-size: 18px; font-weight: bold; color: #1e40af; }
+        .bar-bg { width: 100%; height: 42px; background: #e2e8f0; border-radius: 10px; overflow: hidden; }
+        .bar-fill { height: 100%; background: var(--primary); width: 0%; transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1); }
+        .bar-fill.is-correct { background: var(--success) !important; }
+        .bar-fill.is-dimmed { opacity: 0.45; }
+        
+        /* 講解控制列 */
+        .control-panel { margin-top: 25px; padding-top: 20px; border-top: 2px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
 
-        /* 學生手機介面 */
-        .student-wrap { max-width: 520px; margin: 0 auto; }
-        .student-opt-btn { width: 100%; padding: 16px; margin-bottom: 12px; font-size: 17px; font-weight: bold; background: white; border: 2px solid #cbd5e1; border-radius: 12px; cursor: pointer; text-align: left; transition: 0.15s; display: flex; align-items: center; gap: 10px; }
-        .student-opt-btn:hover:not(:disabled) { border-color: var(--primary); background: #eff6ff; }
-        .student-opt-btn.selected { background: var(--primary); color: white; border-color: var(--primary); }
-        .student-opt-btn.correct-ans { background: var(--success) !important; color: white !important; border-color: var(--success) !important; }
-        .student-opt-btn.wrong-ans { background: var(--danger) !important; color: white !important; border-color: var(--danger) !important; }
-        .student-opt-btn:disabled { cursor: default; }
-        .student-mini-bar { margin-top: 20px; padding: 16px; background: #f8fafc; border-radius: 12px; border: 1px solid #e2e8f0; }
+        /* 學生端介面 */
+        .student-view { max-width: 520px; margin: 0 auto; }
+        .student-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
+        .option-btn { width: 100%; padding: 16px; margin-bottom: 12px; font-size: 17px; font-weight: bold; background: white; border: 2px solid var(--border); border-radius: 12px; cursor: pointer; text-align: left; transition: 0.2s; display: flex; align-items: center; gap: 12px; }
+        .option-btn:hover:not(:disabled) { border-color: var(--primary); background: #eff6ff; }
+        .option-btn.selected { background: var(--primary); color: white; border-color: var(--primary); }
+        .option-btn.correct-reveal { background: var(--success) !important; color: white !important; border-color: var(--success) !important; }
+        .option-btn.wrong-reveal { background: var(--danger) !important; color: white !important; border-color: var(--danger) !important; }
+        .option-btn:disabled { cursor: default; }
+        
+        /* 學生端即時結果條 */
+        .student-result-box { background: #f8fafc; border: 2px solid #e2e8f0; border-radius: 12px; padding: 16px; margin-top: 20px; }
+        .mini-bar-item { margin-bottom: 10px; }
+        .mini-bar-text { display: flex; justify-content: space-between; font-size: 14px; font-weight: bold; margin-bottom: 4px; }
+        .mini-bar-bg { width: 100%; height: 14px; background: #e2e8f0; border-radius: 6px; overflow: hidden; }
+        .mini-bar-fill { height: 100%; background: var(--primary); transition: width 0.3s; }
+        .mini-bar-fill.is-correct { background: var(--success); }
+        .wait-banner { background: #fef3c7; color: #92400e; padding: 12px; border-radius: 8px; font-weight: bold; text-align: center; margin-top: 16px; }
     </style>
 </head>
 <body>
 
 <div class="container">
-    <!-- 1. 講師出題設定區 -->
+    <!-- 1. 講師題庫設定介面 -->
     <div id="host-setup">
-        <div class="header-bar">
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 15px;">
             <div>
-                <h1 style="margin:0;">📚 課堂即時測驗設定</h1>
-                <p style="margin:6px 0 0 0; color: var(--muted);">設定每題 A、B、C、D 選項並勾選正確答案（自動儲存於瀏覽器）</p>
+                <h1>📝 課堂多題即時測驗設定（預設 10 題）</h1>
+                <p style="color: #64748b; margin: 0;">每題固定為 A、B、C、D 四個選項。學生投票後會即時看到投票分布，講解完畢由您手動切換下一題。</p>
             </div>
-            <div style="display:flex; gap:8px; flex-wrap:wrap;">
-                <button class="btn btn-secondary btn-sm" onclick="toggleBatchImport()">📋 批次貼上題目</button>
-                <button class="btn btn-secondary btn-sm" onclick="resetDefaultQuestions()">🔄 載入範例題庫</button>
-                <button class="btn btn-success" onclick="startSession()">🚀 開始課堂測驗</button>
+            <div style="display: flex; gap: 10px;">
+                <button class="btn btn-secondary" onclick="toggleBatchImport()">📋 批次貼上題目</button>
+                <button class="btn btn-success" onclick="startSession()">🚀 開始上課測驗</button>
             </div>
         </div>
 
         <!-- 批次匯入區塊 -->
-        <div id="batch-box" class="hidden" style="background:#f8fafc; padding:16px; border-radius:12px; margin-bottom:20px; border:1px solid #cbd5e1;">
-            <p style="margin-top:0; font-weight:bold;">批次貼上格式（每行一題，以 <code>|</code> 分隔：題目|選項A|選項B|選項C|選項D|正解A~D）：</p>
-            <textarea id="batch-text" rows="5" placeholder="HTML的全稱是什麼？|超文本標記語言|高階程式語言|家庭工具語言|超連結傳輸協定|A"></textarea>
-            <div style="margin-top:10px; display:flex; gap:8px;">
-                <button class="btn btn-sm" onclick="applyBatchImport()">套用匯入</button>
-                <button class="btn btn-secondary btn-sm" onclick="toggleBatchImport()">取消</button>
+        <div id="batch-import-box" class="hidden" style="background: #eff6ff; border: 2px solid #bfdbfe; padding: 20px; border-radius: 12px; margin-bottom: 20px;">
+            <h3>📋 快速批次匯入（每題一行，格式：題目 | 選項A | 選項B | 選項C | 選項D | 正解A/B/C/D）</h3>
+            <p style="font-size: 14px; color: #475569; margin-top: 0;">範例：<code>台灣最高的山是哪一座？ | 玉山 | 雪山 | 阿里山 | 合歡山 | A</code></p>
+            <textarea id="batch-textarea" rows="6" placeholder="請貼上題目，最多支援自動解析多行..."></textarea>
+            <div style="margin-top: 10px; display: flex; gap: 10px;">
+                <button class="btn btn-sm" onclick="applyBatchImport()">✅ 套用至下方題庫</button>
+                <button class="btn btn-sm btn-secondary" onclick="toggleBatchImport()">取消</button>
             </div>
         </div>
 
         <div id="questions-list"></div>
 
-        <div style="margin-top: 20px; display: flex; justify-content: space-between;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 20px;">
             <button class="btn btn-secondary" onclick="addQuestionCard()">➕ 新增一題</button>
-            <button class="btn btn-success" onclick="startSession()">🚀 開始課堂測驗</button>
+            <button class="btn btn-success" style="font-size: 18px; padding: 14px 28px;" onclick="startSession()">🚀 儲存題庫並開始測驗</button>
         </div>
     </div>
 
-    <!-- 2. 講師即時投影區 -->
+    <!-- 2. 講師即時投影與講解介面 -->
     <div id="host-live" class="hidden">
-        <div class="live-topbar">
-            <div style="display:flex; align-items:center; gap:10px;">
-                <span id="conn-badge" class="badge badge-wait">🟡 連線建立中...</span>
-                <span style="font-weight:bold; font-size:18px;">第 <span id="current-q-num">1</span> / <span id="total-q-num">10</span> 題</span>
+        <div class="top-bar">
+            <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+                <span class="progress-pill" id="live-progress">第 1 / 10 題</span>
+                <span class="status-pill status-voting" id="live-phase-badge">🟢 開放投票中</span>
+                <span style="font-size: 14px; color: #64748b;" id="online-count">線上學生：0 人</span>
             </div>
-            <div style="display:flex; gap:8px; flex-wrap:wrap;">
-                <button id="btn-reveal" class="btn btn-warning" onclick="revealAnswer()">🔒 結束投票並公布正解</button>
-                <button id="btn-next" class="btn btn-success hidden" onclick="nextQuestion()">➡️ 講解完畢，進入下一題</button>
-                <button class="btn btn-secondary btn-sm" onclick="backToSetup()">⚙️ 返回題庫</button>
+            <div>
+                <button class="btn btn-sm btn-secondary" onclick="backToSetup()">⚙️ 返回編輯題庫</button>
             </div>
         </div>
 
+        <h1 id="live-question" style="font-size: 28px; margin-bottom: 25px; line-height: 1.4;">題目載入中...</h1>
+
         <div class="dashboard">
-            <div class="qr-box">
-                <div style="font-weight:bold; font-size:16px;">📱 掃描 QR Code 加入</div>
+            <div class="qr-panel">
+                <div style="font-weight: bold; font-size: 16px;">📱 學生掃碼加入課堂</div>
                 <div id="qrcode"></div>
-                <div style="font-size:14px; color:var(--muted); margin-bottom:8px;">
-                    已連線學生：<strong id="student-count" style="color:var(--primary); font-size:18px;">0</strong> 人<br>
-                    本題已作答：<strong id="vote-count" style="color:var(--success); font-size:18px;">0</strong> 人
+                <div style="font-size: 12px; color: #64748b; word-break: break-all;" id="share-url"></div>
+                <div style="margin-top: 15px; font-size: 20px; font-weight: bold; color: var(--primary);">
+                    本題已投：<span id="total-votes">0</span> 票
                 </div>
-                <button class="btn btn-secondary btn-sm" style="width:100%; justify-content:center;" onclick="copyJoinLink()">🔗 複製學生加入網址</button>
-                <div id="room-id-text" style="font-size:12px; color:#94a3b8; margin-top:8px; word-break:break-all;"></div>
             </div>
 
             <div>
-                <h2 id="live-q-title" class="q-title-display">題目載入中...</h2>
-                <div id="live-bars"></div>
-                <div id="live-summary" class="summary-box hidden"></div>
+                <div id="chart-container"></div>
+                <div id="correct-rate-banner" class="hidden" style="margin-top: 15px; padding: 14px; background: #dcfce7; color: #166534; border-radius: 10px; font-weight: bold; font-size: 18px;"></div>
+            </div>
+        </div>
+
+        <!-- 講師講解與換題控制列 -->
+        <div class="control-panel">
+            <div style="display: flex; gap: 10px;">
+                <button class="btn btn-secondary" id="prev-btn" onclick="prevQuestion()">⬅️ 上一題</button>
+                <button class="btn btn-secondary" onclick="resetCurrentVotes()">🔄 重置本題票數</button>
+            </div>
+
+            <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+                <button class="btn btn-warning" id="reveal-btn" onclick="revealAnswer()">🔒 結束投票並公布正解（開始講解）</button>
+                <button class="btn btn-success" id="next-btn" onclick="nextQuestion()">➡️ 講解完畢，進入下一題</button>
             </div>
         </div>
     </div>
 
-    <!-- 3. 學生手機作答區 -->
-    <div id="student-view" class="hidden">
-        <div class="student-wrap">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; border-bottom:1px solid #e2e8f0; padding-bottom:12px;">
-🟡 連線講師中...
-第 - / - 題
-正在等待講師開啟題目...
-// 預設 3 題範例（可自由增減至 10 題以上）
-const DEFAULT_QUESTIONS = [
-{
-q: "在網頁開發中，HTML 的主要用途是什麼？",
-opts: ["定義網頁的結構與內容", "控制網頁的動畫與邏輯", "設定網頁的顏色與排版", "管理後端資料庫連線"],
-ans: 0
-},
-{
-q: "下列哪一個 HTTP 狀態碼代表「找不到網頁（Not Found）」？",
-opts: ["200", "301", "404", "500"],
-ans: 2
-},
-{
-q: "在 JavaScript 中，宣告一個「不可重新賦值」的常數應使用哪個關鍵字？",
-opts: ["var", "let", "const", "static"],
-ans: 2
-}
-];
-let questions = [];
-let peer = null;
-let hostConnections = []; // 講師端儲存所有學生連線
-let studentConn = null;   // 學生端連向講師的連線
-// 測驗狀態
-let currentIdx = 0;
-let isRevealed = false;
-let votes = {}; // { peerId: optionIndex (0~3) }
-let myVote = null;
-// 初始化判斷：網址帶有 ?room=xxx 則進入學生模式
-window.addEventListener("DOMContentLoaded", () => {
-const params = new URLSearchParams(window.location.search);
-const roomId = params.get("room");
-if (roomId) {
-initStudentMode(roomId);
-} else {
-loadQuestionsFromStorage();
-renderQuestionCards();
-}
-});
-// ================= 講師端：題庫編輯邏輯 =================
-function loadQuestionsFromStorage() {
-const saved = localStorage.getItem("classroom_quiz_questions");
-if (saved) {
-try {
-questions = JSON.parse(saved);
-if (!Array.isArray(questions) || questions.length === 0) throw new Error();
-return;
-} catch (e) {}
-}
-questions = JSON.parse(JSON.stringify(DEFAULT_QUESTIONS));
-}
-function saveQuestionsToStorage() {
-localStorage.setItem("classroom_quiz_questions", JSON.stringify(questions));
-}
-function resetDefaultQuestions() {
-if (!confirm("確定要重設為範例題庫嗎？目前的題目將會被覆蓋。")) return;
-questions = JSON.parse(JSON.stringify(DEFAULT_QUESTIONS));
-saveQuestionsToStorage();
-renderQuestionCards();
-}
-function renderQuestionCards() {
-const list = document.getElementById("questions-list");
-list.innerHTML = "";
-const labels = ["A", "B", "C", "D"];
-questions.forEach((item, idx) => {
-const card = document.createElement("div");
-card.className = "q-card";
-card.innerHTML = <div class="q-card-header"> <span>第 ${idx + 1} 題</span> <button class="btn btn-danger btn-sm" onclick="removeQuestion(${idx})">🗑️ 刪除</button> </div> <input type="text" placeholder="請輸入題目內容..." value="${escapeHtml(item.q)}" oninput="updateQuestionField(${idx}, 'q', this.value)"> <div class="options-grid"> ${[0, 1, 2, 3].map(optIdx =>
+    <!-- 3. 學生手機投票與即時結果介面 -->
+    <div id="student-view" class="student-view hidden">
+        <div class="student-header">
+            <span class="progress-pill" style="font-size: 14px; padding: 6px 12px;" id="student-progress">連線中...</span>
+            <span style="font-size: 13px; font-weight: bold; color: #166534;" id="student-conn-status">🟢 已連線</span>
+        </div>
 
-<input type="radio" name="ans-${idx}" ${item.ans === optIdx ? "checked" : ""} onchange="updateQuestionField(${idx}, 'ans', ${optIdx})" title="設為正確答案">
-${labels[optIdx]}.
+        <h2 id="student-question" style="font-size: 21px; margin-bottom: 18px; line-height: 1.4;">請稍候，等待講師開始題目...</h2>
+        
+        <div id="student-options"></div>
 
+        <!-- 學生選完後即時顯示投票結果 -->
+        <div id="student-results" class="student-result-box hidden">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                <span style="font-weight: bold; color: #0f172a;">📊 即時投票結果分布</span>
+                <span style="font-size: 13px; color: #64748b;" id="student-total-votes">共 0 票</span>
+            </div>
+            <div id="student-bars"></div>
+            <div id="student-status-banner" class="wait-banner">
+                ✅ 已收到您的選擇！請聽講師講解，講師切換下一題後畫面將自動更新。
+            </div>
+        </div>
+    </div>
+</div>
 
-).join("")} </div> ;
-list.appendChild(card);
-});
-}
-function addQuestionCard() {
-questions.push({ q: "", opts: ["", "", "", ""], ans: 0 });
-saveQuestionsToStorage();
-renderQuestionCards();
-}
-function removeQuestion(idx) {
-if (questions.length <= 1) {
-alert("至少需要保留 1 題！");
-return;
-}
-questions.splice(idx, 1);
-saveQuestionsToStorage();
-renderQuestionCards();
-}
-function updateQuestionField(idx, field, val) {
-questions[idx][field] = val;
-saveQuestionsToStorage();
-}
-function updateOptionField(idx, optIdx, val) {
-questions[idx].opts[optIdx] = val;
-saveQuestionsToStorage();
-}
-function toggleBatchImport() {
-document.getElementById("batch-box").classList.toggle("hidden");
-}
-function applyBatchImport() {
-const raw = document.getElementById("batch-text").value.trim();
-if (!raw) return;
-const lines = raw.split("\n");
-const parsed = [];
-const mapAns = { "A": 0, "B": 1, "C": 2, "D": 3 };
-lines.forEach(line => {
-const parts = line.split("|").map(s => s.trim());
-if (parts.length >= 6) {
-const ansChar = parts[5].toUpperCase();
-parsed.push({
-q: parts[0],
-opts: [parts[1], parts[2], parts[3], parts[4]],
-ans: mapAns[ansChar] !== undefined ? mapAns[ansChar] : 0
-});
-}
-});
-if (parsed.length === 0) {
-alert("格式解析失敗，請確認每行皆包含 6 個以 | 分隔的欄位！");
-return;
-}
-questions = parsed;
-saveQuestionsToStorage();
-renderQuestionCards();
-toggleBatchImport();
-document.getElementById("batch-text").value = "";
-}
-// ================= 講師端：即時連線與投影控制 =================
-function startSession() {
-// 檢查題目完整性
-for (let i = 0; i < questions.length; i++) {
-if (!questions[i].q.trim()) {
-alert(第 ${i + 1} 題尚未填寫題目內容！);
-return;
-}
-}
-document.getElementById("host-setup").classList.add("hidden");
-document.getElementById("host-live").classList.remove("hidden");
-currentIdx = 0;
-isRevealed = false;
-votes = {};
-// 建立 PeerJS 房間
-if (!peer) {
-peer = new Peer();
-peer.on("open", (id) => {
-const badge = document.getElementById("conn-badge");
-badge.className = "badge badge-live";
-badge.textContent = "🟢 教室已開啟";
-document.getElementById("room-id-text").textContent = "教室代碼：" + id;
-const joinUrl = getJoinUrl(id);
-const qrContainer = document.getElementById("qrcode");
-qrContainer.innerHTML = "";
-new QRCode(qrContainer, {
-text: joinUrl,
-width: 180,
-height: 180
-});
-});
-peer.on("connection", (conn) => {
-hostConnections.push(conn);
-updateStudentCount();
-conn.on("open", () => {
-// 新學生加入時，立刻同步目前題目狀態
-sendStateToStudent(conn);
-});
-conn.on("data", (data) => {
-if (data.type === "VOTE" && !isRevealed && data.qIdx === currentIdx) {
-votes[conn.peer] = data.choice;
-renderLiveDashboard();
-}
-});
-conn.on("close", () => {
-hostConnections = hostConnections.filter(c => c.peer !== conn.peer);
-updateStudentCount();
-});
-});
-}
-renderLiveDashboard();
-broadcastState();
-}
-function getJoinUrl(roomId) {
-const url = new URL(window.location.href);
-url.searchParams.set("room", roomId);
-return url.toString();
-}
-function copyJoinLink() {
-if (!peer || !peer.id) return;
-const url = getJoinUrl(peer.id);
-navigator.clipboard.writeText(url).then(() => {
-alert("已複製學生加入網址！可直接貼給學生或開新分頁測試。");
-});
-}
-function updateStudentCount() {
-document.getElementById("student-count").textContent = hostConnections.length;
-}
-function renderLiveDashboard() {
-const qObj = questions[currentIdx];
-document.getElementById("current-q-num").textContent = currentIdx + 1;
-document.getElementById("total-q-num").textContent = questions.length;
-document.getElementById("live-q-title").textContent = ${currentIdx + 1}. ${qObj.q};
-const counts =;
-const voteValues = Object.values(votes);
-voteValues.forEach(v => { if (counts[v] !== undefined) counts[v]++; });
-const totalVotes = voteValues.length;
-document.getElementById("vote-count").textContent = totalVotes;
-const labels = ["A", "B", "C", "D"];
-const barsContainer = document.getElementById("live-bars");
-barsContainer.innerHTML = "";
-qObj.opts.forEach((optText, idx) => {
-const count = counts[idx];
-const pct = totalVotes > 0 ? Math.round((count / totalVotes) * 100) : 0;
-let barClass = "bar-fill";
-let mark = "";
-if (isRevealed) {
-if (idx === qObj.ans) {
-barClass += " correct";
-mark = " ✅ (正確答案)";
-} else {
-barClass += " dimmed";
-}
-}
-barsContainer.innerHTML += <div class="bar-item"> <div class="bar-header"> <span>${labels[idx]}. ${escapeHtml(optText)}${mark}</span> <span>${count} 票 (${pct}%)</span> </div> <div class="bar-bg"> <div class="${barClass}" style="width: ${pct}%;"></div> </div> </div>;
-});
-// 按鈕與總結狀態切換
-const btnReveal = document.getElementById("btn-reveal");
-const btnNext = document.getElementById("btn-next");
-const summaryBox = document.getElementById("live-summary");
-if (!isRevealed) {
-btnReveal.classList.remove("hidden");
-btnNext.classList.add("hidden");
-summaryBox.classList.add("hidden");
-} else {
-btnReveal.classList.add("hidden");
-summaryBox.classList.remove("hidden");
-const correctCount = counts[qObj.ans];
-const acc = totalVotes > 0 ? Math.round((correctCount / totalVotes) * 100) : 0;
-summaryBox.textContent = 📊 統計結果：正確答案為 ${labels[qObj.ans]}，共 ${correctCount} 人答對（答對率 ${acc}%）;
-if (currentIdx < questions.length - 1) {
-btnNext.textContent = "➡️ 講解完畢，進入下一題";
-btnNext.classList.remove("hidden");
-} else {
-btnNext.textContent = "🏁 測驗結束（重新開始）";
-btnNext.classList.remove("hidden");
-}
-}
-}
-function revealAnswer() {
-isRevealed = true;
-renderLiveDashboard();
-broadcastState();
-}
-function nextQuestion() {
-if (currentIdx < questions.length - 1) {
-currentIdx++;
-isRevealed = false;
-votes = {};
-renderLiveDashboard();
-broadcastState();
-} else {
-if (confirm("已經是最後一題了！要從第 1 題重新開始測驗嗎？")) {
-currentIdx = 0;
-isRevealed = false;
-votes = {};
-renderLiveDashboard();
-broadcastState();
-}
-}
-}
-function backToSetup() {
-if (!confirm("返回題庫將會中斷目前的投影畫面，確定要返回嗎？")) return;
-document.getElementById("host-live").classList.add("hidden");
-document.getElementById("host-setup").classList.remove("hidden");
-}
-function getPayloadForStudent() {
-const qObj = questions[currentIdx];
-return {
-type: "SYNC",
-qIdx: currentIdx,
-total: questions.length,
-q: qObj.q,
-opts: qObj.opts,
-isRevealed: isRevealed,
-ans: isRevealed ? qObj.ans : null
-};
-}
-function sendStateToStudent(conn) {
-if (conn.open) {
-conn.send(getPayloadForStudent());
-}
-}
-function broadcastState() {
-const payload = getPayloadForStudent();
-hostConnections.forEach(conn => {
-if (conn.open) conn.send(payload);
-});
-}
-// ================= 學生端：連線與作答邏輯 =================
-function initStudentMode(roomId) {
-document.getElementById("host-setup").classList.add("hidden");
-document.getElementById("student-view").classList.remove("hidden");
-peer = new Peer();
-peer.on("open", () => {
-studentConn = peer.connect(roomId);
-studentConn.on("open", () => {
-const badge = document.getElementById("stu-conn-badge");
-badge.className = "badge badge-live";
-badge.textContent = "🟢 已連線至教室";
-});
-studentConn.on("data", (data) => {
-if (data.type === "SYNC") {
-renderStudentQuestion(data);
-}
-});
-studentConn.on("close", () => {
-const badge = document.getElementById("stu-conn-badge");
-badge.className = "badge badge-wait";
-badge.textContent = "🔴 與講師斷線，請重新整理";
-});
-});
-}
-let lastRenderedQIdx = -1;
-function renderStudentQuestion(data) {
-// 若換新題目，重置學生選項紀錄
-if (data.qIdx !== lastRenderedQIdx) {
-myVote = null;
-lastRenderedQIdx = data.qIdx;
-}
-document.getElementById("stu-q-num").textContent = data.qIdx + 1;
-document.getElementById("stu-total-num").textContent = data.total;
-document.getElementById("stu-q-title").textContent = ${data.qIdx + 1}. ${data.q};
-const labels = ["A", "B", "C", "D"];
-const optContainer = document.getElementById("stu-options");
-optContainer.innerHTML = "";
-data.opts.forEach((optText, idx) => {
-const btn = document.createElement("button");
-btn.className = "student-opt-btn";
-btn.disabled = data.isRevealed;
-if (!data.isRevealed) {
-if (myVote === idx) btn.classList.add("selected");
-btn.onclick = () => submitStudentVote(data.qIdx, idx, data);
-} else {
-// 已公布正解
-if (idx === data.ans) {
-btn.classList.add("correct-ans");
-} else if (myVote === idx && myVote !== data.ans) {
-btn.classList.add("wrong-ans");
-}
-}
-btn.innerHTML = <span>${labels[idx]}.</span> <span>${escapeHtml(optText)}</span>;
-optContainer.appendChild(btn);
-});
-const statusMsg = document.getElementById("stu-status-msg");
-if (!data.isRevealed) {
-if (myVote !== null) {
-statusMsg.classList.remove("hidden");
-statusMsg.innerHTML = ✅ 你已選擇 <strong>${labels[myVote]}</strong>（公布答案前可隨時更改）;
-} else {
-statusMsg.classList.add("hidden");
-}
-} else {
-statusMsg.classList.remove("hidden");
-if (myVote === null) {
-statusMsg.innerHTML = ⏰ 本題已結束投票！正確答案為 <strong>${labels[data.ans]}</strong>;
-} else if (myVote === data.ans) {
-statusMsg.innerHTML = 🎉 <strong>答對了！</strong> 正確答案就是 ${labels[data.ans]};
-} else {
-statusMsg.innerHTML = ❌ <strong>答錯了！</strong> 你選了 ${labels[myVote]}，正確答案為 <strong>${labels[data.ans]}</strong>;
-}
-}
-}
-function submitStudentVote(qIdx, choiceIdx, currentData) {
-myVote = choiceIdx;
-if (studentConn && studentConn.open) {
-studentConn.send({
-type: "VOTE",
-qIdx: qIdx,
-choice: choiceIdx
-});
-}
-renderStudentQuestion(currentData);
-}
-// 防止 XSS 跳脫字元
-function escapeHtml(str) {
-if (!str) return "";
-return str.replace(/&/g, "&")
-.replace(/</g, "<")
-.replace(/>/g, ">")
-.replace(/"/g, """);
-}
+<script>
+    const LETTERS = ['A', 'B', 'C', 'D'];
+    let questions = [];
+    let currentQIndex = 0;
+    let isRevealed = false; // 是否已鎖定投票並公布正解（講解階段）
+    
+    let peer = null;
+    let studentConnections = [];
+    let hostConnection = null;
+    let studentChoice = null;
+
+    // 預設產生 10 題範本
+    function initDefaultQuestions() {
+        questions = Array.from({ length: 10 }, (_, i) => ({
+            text: `第 ${i + 1} 題：請在此輸入題目內容？`,
+            options: ['選項 A 內容', '選項 B 內容', '選項 C 內容', '選項 D 內容'],
+            correctIndex: 0,
+            votes: [0, 0, 0, 0]
+        }));
+        renderSetupList();
+    }
+
+    // 渲染講師設定畫面的題庫列表
+    function renderSetupList() {
+        const container = document.getElementById('questions-list');
+        container.innerHTML = '';
+
+        questions.forEach((q, qIdx) => {
+            const card = document.createElement('div');
+            card.className = 'question-card';
+            
+            let optionsHtml = '';
+            LETTERS.forEach((letter, optIdx) => {
+                const isChecked = q.correctIndex === optIdx ? 'checked' : '';
+                optionsHtml += `
+                    <div class="option-row">
+                        <span class="option-letter">${letter}.</span>
+                        <input type="text" value="${escapeHtml(q.options[optIdx])}" oninput="updateOption(${qIdx}, ${optIdx}, this.value)" placeholder="輸入選項 ${letter}">
+                        <label class="correct-label">
+                            <input type="radio" name="correct_${qIdx}" ${isChecked} onchange="updateCorrect(${qIdx}, ${optIdx})"> 正解
+                        </label>
+                    </div>
+                `;
+            });
+
+            card.innerHTML = `
+                <div class="question-card-header">
+                    <span class="q-badge">第 ${qIdx + 1} 題</span>
+                    ${questions.length > 1 ? `<button class="btn btn-sm btn-danger" onclick="removeQuestion(${qIdx})">刪除</button>` : ''}
+                </div>
+                <input type="text" value="${escapeHtml(q.text)}" oninput="updateQuestionText(${qIdx}, this.value)" placeholder="請輸入第 ${qIdx + 1} 題題目...">
+                <div class="options-grid">${optionsHtml}</div>
+            `;
+            container.appendChild(card);
+        });
+    }
+
+    function escapeHtml(str) {
+        return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    }
+
+    function updateQuestionText(qIdx, val) { questions[qIdx].text = val; }
+    function updateOption(qIdx, optIdx, val) { questions[qIdx].options[optIdx] = val; }
+    function updateCorrect(qIdx, optIdx) { questions[qIdx].correctIndex = optIdx; }
+
+    function addQuestionCard() {
+        const num = questions.length + 1;
+        questions.push({
+            text: `第 ${num} 題：請在此輸入題目內容？`,
+            options: ['選項 A 內容', '選項 B 內容', '選項 C 內容', '選項 D 內容'],
+            correctIndex: 0,
+            votes: [0, 0, 0, 0]
+        });
+        renderSetupList();
+    }
+
+    function removeQuestion(qIdx) {
+        questions.splice(qIdx, 1);
+        renderSetupList();
+    }
+
+    function toggleBatchImport() {
+        document.getElementById('batch-import-box').classList.toggle('hidden');
+    }
+
+    function applyBatchImport() {
+        const raw = document.getElementById('batch-textarea').value.trim();
+        if (!raw) return;
+        const lines = raw.split('\n').filter(l => l.trim() !== '');
+        const parsed = [];
+
+        lines.forEach(line => {
+            const parts = line.split('|').map(p => p.trim());
+            if (parts.length >= 5) {
+                let cIdx = 0;
+                if (parts[5]) {
+                    const ans = parts[5].toUpperCase();
+                    if (LETTERS.includes(ans)) cIdx = LETTERS.indexOf(ans);
+                }
+                parsed.push({
+                    text: parts[0],
+                    options: [parts[1], parts[2], parts[3], parts[4]],
+                    correctIndex: cIdx,
+                    votes: [0, 0, 0, 0]
+                });
+            }
+        });
+
+        if (parsed.length > 0) {
+            questions = parsed;
+            renderSetupList();
+            toggleBatchImport();
+            alert(`成功匯入 ${parsed.length} 道題目！`);
+        } else {
+            alert('格式無法辨識，請確認每行皆包含「題目 | 選項A | 選項B | 選項C | 選項D | 正解」');
+        }
+    }
+
+    // 判斷啟動模式（講師端 vs 學生端）
+    const urlParams = new URLSearchParams(window.location.search);
+    const hostId = urlParams.get('host');
+
+    if (hostId) {
+        initStudentMode(hostId);
+    } else {
+        initDefaultQuestions();
+    }
+
+    // ================= 講師端邏輯 =================
+    function startSession() {
+        if (questions.length === 0) {
+            alert('請至少建立一題！');
+            return;
+        }
+        document.getElementById('host-setup').classList.add('hidden');
+        document.getElementById('host-live').classList.remove('hidden');
+
+        if (!peer) {
+            peer = new Peer();
+            peer.on('open', (id) => {
+                const joinUrl = `${window.location.origin}${window.location.pathname}?host=${id}`;
+                document.getElementById('share-url').innerText = joinUrl;
+                document.getElementById('qrcode').innerHTML = '';
+                new QRCode(document.getElementById('qrcode'), { text: joinUrl, width: 170, height: 170 });
+                loadQuestion(currentQIndex);
+            });
+
+            peer.on('connection', (conn) => {
+                studentConnections.push(conn);
+                updateOnlineCount();
+
+                conn.on('open', () => {
+                    sendStateToStudent(conn);
+                });
+
+                conn.on('data', (msg) => {
+                    if (msg.type === 'VOTE' && msg.qIndex === currentQIndex && !isRevealed) {
+                        const q = questions[currentQIndex];
+                        if (msg.oldIndex !== null && msg.oldIndex !== undefined) {
+                            q.votes[msg.oldIndex] = Math.max(0, q.votes[msg.oldIndex] - 1);
+                        }
+                        q.votes[msg.newIndex]++;
+                        renderHostChart();
+                        broadcastVotesUpdate();
+                    }
+                });
+
+                conn.on('close', () => {
+                    studentConnections = studentConnections.filter(c => c !== conn);
+                    updateOnlineCount();
+                });
+            });
+        } else {
+            loadQuestion(currentQIndex);
+        }
+    }
+
+    function updateOnlineCount() {
+        const active = studentConnections.filter(c => c.open).length;
+        document.getElementById('online-count').innerText = `線上學生：${active} 人`;
+    }
+
+    function backToSetup() {
+        document.getElementById('host-live').classList.add('hidden');
+        document.getElementById('host-setup').classList.remove('hidden');
+    }
+
+    function loadQuestion(index) {
+        currentQIndex = index;
+        isRevealed = false;
+        const q = questions[currentQIndex];
+
+        document.getElementById('live-progress').innerText = `第 ${currentQIndex + 1} / ${questions.length} 題`;
+        document.getElementById('live-question').innerText = q.text;
+        
+        const badge = document.getElementById('live-phase-badge');
+        badge.className = 'status-pill status-voting';
+        badge.innerText = '🟢 開放投票中';
+
+        document.getElementById('reveal-btn').disabled = false;
+        document.getElementById('correct-rate-banner').classList.add('hidden');
+        
+        document.getElementById('prev-btn').disabled = (currentQIndex === 0);
+        const nextBtn = document.getElementById('next-btn');
+        if (currentQIndex === questions.length - 1) {
+            nextBtn.innerText = '🎉 已是最後一題（完成測驗）';
+        } else {
+            nextBtn.innerText = '➡️ 講解完畢，進入下一題';
+        }
+
+        renderHostChart();
+        broadcastFullState();
+    }
+
+    function revealAnswer() {
+        isRevealed = true;
+        const q = questions[currentQIndex];
+        
+        const badge = document.getElementById('live-phase-badge');
+        badge.className = 'status-pill status-locked';
+        badge.innerText = '🔒 投票已截止（講師講解中）';
+        
+        document.getElementById('reveal-btn').disabled = true;
+
+        const total = q.votes.reduce((a, b) => a + b, 0);
+        const correctCount = q.votes[q.correctIndex];
+        const rate = total === 0 ? 0 : Math.round((correctCount / total) * 100);
+        
+        const banner = document.getElementById('correct-rate-banner');
+        banner.innerText = `✅ 正確答案：(${LETTERS[q.correctIndex]}) ${q.options[q.correctIndex]} ｜ 全班答對率：${rate}% (${correctCount}/${total} 人)`;
+        banner.classList.remove('hidden');
+
+        renderHostChart();
+        broadcastFullState();
+    }
+
+    function nextQuestion() {
+        if (currentQIndex < questions.length - 1) {
+            loadQuestion(currentQIndex + 1);
+        } else {
+            alert('所有題目皆已完成講解！您可以點擊左上角「返回編輯題庫」或重新檢視各題結果。');
+        }
+    }
+
+    function prevQuestion() {
+        if (currentQIndex > 0) {
+            loadQuestion(currentQIndex - 1);
+        }
+    }
+
+    function resetCurrentVotes() {
+        questions[currentQIndex].votes = [0, 0, 0, 0];
+        isRevealed = false;
+        loadQuestion(currentQIndex);
+    }
+
+    function renderHostChart() {
+        const q = questions[currentQIndex];
+        const container = document.getElementById('chart-container');
+        container.innerHTML = '';
+        
+        const total = q.votes.reduce((a, b) => a + b, 0);
+        document.getElementById('total-votes').innerText = total;
+        const colors = ['#2563eb', '#8b5cf6', '#f59e0b', '#06b6d4'];
+
+        q.options.forEach((opt, idx) => {
+            const count = q.votes[idx];
+            const percent = total === 0 ? 0 : Math.round((count / total) * 100);
+            const isCorrect = (idx === q.correctIndex);
+            
+            let barClass = 'bar-fill';
+            let barStyle = `width: ${percent}%; background-color: ${colors[idx]};`;
+            let labelSuffix = '';
+
+            if (isRevealed) {
+                if (isCorrect) {
+                    barClass += ' is-correct';
+                    barStyle = `width: ${percent}%;`;
+                    labelSuffix = ' ✅ (正解)';
+                } else {
+                    barClass += ' is-dimmed';
+                }
+            }
+
+            const item = document.createElement('div');
+            item.className = 'bar-item';
+            item.innerHTML = `
+                <div class="bar-header">
+                    <span>(${LETTERS[idx]}) ${escapeHtml(opt)}${labelSuffix}</span>
+                    <span>${count} 票 (${percent}%)</span>
+                </div>
+                <div class="bar-bg">
+                    <div class="${barClass}" style="${barStyle}"></div>
+                </div>
+            `;
+            container.appendChild(item);
+        });
+    }
+
+    function getPayloadForStudent() {
+        const q = questions[currentQIndex];
+        return {
+            qIndex: currentQIndex,
+            totalQ: questions.length,
+            text: q.text,
+            options: q.options,
+            votes: q.votes,
+            isRevealed: isRevealed,
+            correctIndex: isRevealed ? q.correctIndex : null
+        };
+    }
+
+    function sendStateToStudent(conn) {
+        if (conn.open) {
+            conn.send({ type: 'SYNC_STATE', data: getPayloadForStudent() });
+        }
+    }
+
+    function broadcastFullState() {
+        const payload = getPayloadForStudent();
+        studentConnections.forEach(conn => {
+            if (conn.open) conn.send({ type: 'SYNC_STATE', data: payload });
+        });
+    }
+
+    function broadcastVotesUpdate() {
+        const q = questions[currentQIndex];
+        studentConnections.forEach(conn => {
+            if (conn.open) {
+                conn.send({ type: 'VOTES_UPDATE', qIndex: currentQIndex, votes: q.votes });
+            }
+        });
+    }
+
+    // ================= 學生端邏輯 =================
+    let studentCurrentQIndex = -1;
+    let latestState = null;
+
+    function initStudentMode(targetHostId) {
+        document.getElementById('host-setup').classList.add('hidden');
+        document.getElementById('student-view').classList.remove('hidden');
+
+        peer = new Peer();
+        peer.on('open', () => {
+            hostConnection = peer.connect(targetHostId);
+            
+            hostConnection.on('open', () => {
+                document.getElementById('student-conn-status').innerText = '🟢 已連線至課堂';
+            });
+
+            hostConnection.on('data', (msg) => {
+                if (msg.type === 'SYNC_STATE') {
+                    latestState = msg.data;
+                    // 若換了新題目，重置學生的作答狀態
+                    if (studentCurrentQIndex !== latestState.qIndex) {
+                        studentCurrentQIndex = latestState.qIndex;
+                        studentChoice = null;
+                    }
+                    renderStudentUI();
+                } else if (msg.type === 'VOTES_UPDATE' && latestState && msg.qIndex === latestState.qIndex) {
+                    latestState.votes = msg.votes;
+                    if (studentChoice !== null || latestState.isRevealed) {
+                        renderStudentResultBars();
+                    }
+                }
+            });
+
+            hostConnection.on('close', () => {
+                document.getElementById('student-conn-status').innerText = '🔴 連線已中斷，請重新掃碼';
+                document.getElementById('student-conn-status').style.color = '#dc2626';
+            });
+        });
+    }
+
+    function renderStudentUI() {
+        if (!latestState) return;
+        document.getElementById('student-progress').innerText = `第 ${latestState.qIndex + 1} / ${latestState.totalQ} 題`;
+        document.getElementById('student-question').innerText = latestState.text;
+
+        const optionsContainer = document.getElementById('student-options');
+        optionsContainer.innerHTML = '';
+
+        latestState.options.forEach((opt, idx) => {
+            const btn = document.createElement('button');
+            btn.className = 'option-btn';
+            
+            if (latestState.isRevealed) {
+                btn.disabled = true;
+                if (idx === latestState.correctIndex) {
+                    btn.classList.add('correct-reveal');
+                } else if (idx === studentChoice && studentChoice !== latestState.correctIndex) {
+                    btn.classList.add('wrong-reveal');
+                }
+            } else {
+                if (idx === studentChoice) {
+                    btn.classList.add('selected');
+                }
+            }
+
+            btn.innerHTML = `<span>(${LETTERS[idx]})</span> <span>${escapeHtml(opt)}</span>`;
+            btn.onclick = () => {
+                if (latestState.isRevealed) return;
+                if (hostConnection && hostConnection.open) {
+                    hostConnection.send({
+                        type: 'VOTE',
+                        qIndex: latestState.qIndex,
+                        oldIndex: studentChoice,
+                        newIndex: idx
+                    });
+                    studentChoice = idx;
+                    renderStudentUI();
+                }
+            };
+            optionsContainer.appendChild(btn);
+        });
+
+        // 只要學生已經選了選項，或是講師已經公布正解，就立刻顯示即時投票分布圖
+        const resultsBox = document.getElementById('student-results');
+        const banner = document.getElementById('student-status-banner');
+        
+        if (studentChoice !== null || latestState.isRevealed) {
+            resultsBox.classList.remove('hidden');
+            renderStudentResultBars();
+
+            if (latestState.isRevealed) {
+                if (studentChoice === latestState.correctIndex) {
+                    banner.style.background = '#dcfce7';
+                    banner.style.color = '#166534';
+                    banner.innerText = `🎉 恭喜答對！正確答案是 (${LETTERS[latestState.correctIndex]})。請聽講師講解，等待切換下一題。`;
+                } else if (studentChoice !== null) {
+                    banner.style.background = '#fee2e2';
+                    banner.style.color = '#991b1b';
+                    banner.innerText = `❌ 答錯囉！正確答案是 (${LETTERS[latestState.correctIndex]})。請聽講師講解，等待切換下一題。`;
+                } else {
+                    banner.style.background = '#fef3c7';
+                    banner.style.color = '#92400e';
+                    banner.innerText = `🔒 本題投票已結束，正確答案是 (${LETTERS[latestState.correctIndex]})。等待講師切換下一題。`;
+                }
+            } else {
+                banner.style.background = '#dbeafe';
+                banner.style.color = '#1e40af';
+                banner.innerText = `✅ 您已選擇 (${LETTERS[studentChoice]})，下方為即時投票結果！講師講解並切換下一題前，您仍可更改選項。`;
+            }
+        } else {
+            resultsBox.classList.add('hidden');
+        }
+    }
+
+    function renderStudentResultBars() {
+        if (!latestState) return;
+        const total = latestState.votes.reduce((a, b) => a + b, 0);
+        document.getElementById('student-total-votes').innerText = `共 ${total} 票`;
+        
+        const barsContainer = document.getElementById('student-bars');
+        barsContainer.innerHTML = '';
+
+        latestState.options.forEach((opt, idx) => {
+            const count = latestState.votes[idx];
+            const percent = total === 0 ? 0 : Math.round((count / total) * 100);
+            const isCorrect = latestState.isRevealed && (idx === latestState.correctIndex);
+
+            const div = document.createElement('div');
+            div.className = 'mini-bar-item';
+            div.innerHTML = `
+                <div class="mini-bar-text">
+                    <span>(${LETTERS[idx]}) ${escapeHtml(opt)} ${isCorrect ? '✅' : ''}</span>
+                    <span>${count} 票 (${percent}%)</span>
+                </div>
+                <div class="mini-bar-bg">
+                    <div class="mini-bar-fill ${isCorrect ? 'is-correct' : ''}" style="width: ${percent}%;"></div>
+                </div>
+            `;
+            barsContainer.appendChild(div);
+        });
+    }
+</script>
+
+</body>
+</html>
