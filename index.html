@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>課堂多題即時互動測驗系統（10題四選一）</title>
+    <title>課堂多題即時互動測驗系統</title>
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <style>
@@ -551,6 +551,7 @@
             });
 
             hostConnection.on('data', (msg) => {
+                console.log("學生端收到資料：", msg);
                 if (msg.type === 'SYNC_STATE') {
                     latestState = msg.data;
                     // 若換了新題目，重置學生的作答狀態
