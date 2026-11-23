@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>課堂多題即時互動調查系統（複選＋答題率統計版）</title>
-    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <style>
         :root {
@@ -59,26 +59,35 @@
         .status-pill { padding: 8px 16px; border-radius: 20px; font-weight: bold; font-size: 14px; }
         .status-voting { background: #dcfce7; color: #166534; }
         .status-locked { background: #fef3c7; color: #92400e; }
+        .conn-badge { font-size: 13px; font-weight: bold; padding: 5px 10px; border-radius: 16px; background: #dcfce7; color: #166534; }
+        .conn-badge.reconnecting { background: #fef3c7; color: #92400e; }
+        .conn-badge.offline { background: #fee2e2; color: #991b1b; }
         
-        .dashboard { display: grid; grid-template-columns: 250px 1fr; gap: 30px; align-items: start; }
+        .dashboard { display: grid; grid-template-columns: 270px 1fr; gap: 30px; align-items: start; }
         @media (max-width: 768px) { .dashboard { grid-template-columns: 1fr; } }
         .qr-panel { background: #f8fafc; border: 2px solid #e2e8f0; padding: 20px; border-radius: 12px; text-align: center; }
-        #qrcode { display: flex; justify-content: center; margin: 12px 0; background: white; padding: 10px; border-radius: 8px; }
+        #qrcode { display: flex; justify-content: center; align-items: center; margin: 12px auto; background: #ffffff; padding: 14px; border-radius: 10px; border: 1px solid #e2e8f0; cursor: zoom-in; width: fit-content; }
+        #qrcode img, #qrcode canvas { display: block; }
         
+        /* QR 放大遮罩 */
+        .qr-modal { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.78); display: flex; flex-direction: column; justify-content: center; align-items: center; z-index: 9999; padding: 20px; }
+        .qr-modal-card { background: #ffffff; padding: 28px; border-radius: 18px; text-align: center; max-width: 92vw; box-shadow: 0 20px 50px rgba(0,0,0,0.3); }
+        #qrcode-large { display: flex; justify-content: center; margin: 16px auto; background: #ffffff; padding: 16px; }
+
         /* 長條圖樣式 */
         .bar-item { margin-bottom: 18px; }
         .bar-header { display: flex; justify-content: space-between; font-weight: bold; margin-bottom: 6px; font-size: 18px; }
         .bar-bg { width: 100%; height: 42px; background: #e2e8f0; border-radius: 10px; overflow: hidden; }
-        .bar-fill { height: 100%; background: var(--primary); width: 0%; transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1); }
+        .bar-fill { height: 100%; background: var(--primary); width: 0%; transition: width 0.35s cubic-bezier(0.4, 0, 0.2, 1); }
         
         /* 講解控制列 */
         .control-panel { margin-top: 25px; padding-top: 20px; border-top: 2px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
 
         /* 學生端介面 */
         .student-view { max-width: 520px; margin: 0 auto; }
-        .student-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
+        .student-header { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 15px; flex-wrap: wrap; }
         .multi-hint { display: inline-block; background: #e0e7ff; color: #3730a3; font-size: 13px; font-weight: bold; padding: 4px 10px; border-radius: 6px; margin-bottom: 10px; }
-        .option-btn { width: 100%; padding: 16px; margin-bottom: 12px; font-size: 17px; font-weight: bold; background: white; border: 2px solid var(--border); border-radius: 12px; cursor: pointer; text-align: left; transition: 0.2s; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+        .option-btn { width: 100%; padding: 16px; margin-bottom: 12px; font-size: 17px; font-weight: bold; background: white; border: 2px solid var(--border); border-radius: 12px; cursor: pointer; text-align: left; transition: 0.15s; display: flex; align-items: center; justify-content: space-between; gap: 12px; touch-action: manipulation; }
         .option-btn:hover:not(:disabled) { border-color: var(--primary); background: #eff6ff; }
         .option-btn.selected { background: var(--primary); color: white; border-color: var(--primary); }
         .option-btn:disabled { cursor: default; opacity: 0.9; }
@@ -90,6 +99,7 @@
         .mini-bar-bg { width: 100%; height: 14px; background: #e2e8f0; border-radius: 6px; overflow: hidden; }
         .mini-bar-fill { height: 100%; background: var(--primary); transition: width 0.3s; }
         .wait-banner { background: #fef3c7; color: #92400e; padding: 12px; border-radius: 8px; font-weight: bold; text-align: center; margin-top: 16px; line-height: 1.5; }
+        .reconnect-bar { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; padding: 10px 14px; border-radius: 10px; margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: 13px; font-weight: bold; }
     </style>
 </head>
 <body>
@@ -129,10 +139,11 @@
     <!-- 2. 講師即時投影與講解介面 -->
     <div id="host-live" class="hidden">
         <div class="top-bar">
-            <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+            <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
                 <span class="progress-pill" id="live-progress">第 1 / 10 題</span>
                 <span class="status-pill status-voting" id="live-phase-badge">🟢 開放複選作答中</span>
-                <span style="font-size: 14px; color: #64748b;" id="online-count">線上學生：0 人</span>
+                <span class="conn-badge" id="host-server-status">🟢 連線服務就緒</span>
+                <span style="font-size: 14px; font-weight: bold; color: #475569;" id="online-count">線上學生：0 人</span>
             </div>
             <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                 <button class="btn btn-sm btn-danger" onclick="resetAllQuestions()">🔁 全部題目重新作答</button>
@@ -143,8 +154,10 @@
         <div class="dashboard">
             <div class="qr-panel">
                 <div style="font-weight: bold; font-size: 16px;">📱 學生掃碼加入課堂</div>
-                <div id="qrcode"></div>
+                <div id="qrcode" title="點擊放大 QR Code" onclick="openQrModal()"></div>
+                <div style="font-size: 11px; color: #64748b; margin-bottom: 6px;">（點擊條碼可放大投影）</div>
                 <div style="font-size: 12px; color: #64748b; word-break: break-all;" id="share-url"></div>
+                <button class="btn btn-outline btn-sm" style="margin-top: 8px; width: 100%;" onclick="copyJoinUrl()">📋 複製課堂連結</button>
                 <div style="margin-top: 15px; font-size: 20px; font-weight: bold; color: var(--primary);">
                     已作答：<span id="total-voters">0</span> 人
                 </div>
@@ -172,12 +185,16 @@
 
     <!-- 3. 學生手機投票與即時結果介面 -->
     <div id="student-view" class="student-view hidden">
+        <div id="student-reconnect-bar" class="reconnect-bar hidden">
+            <span id="student-reconnect-msg">⚠️ 與講師端連線中斷，正在自動重連...</span>
+            <button class="btn btn-sm btn-danger" onclick="manualStudentReconnect()">立即重連</button>
+        </div>
         <div class="student-header">
             <span class="progress-pill" style="font-size: 14px; padding: 6px 12px;" id="student-progress">連線中...</span>
-            <span style="font-size: 13px; font-weight: bold; color: #166534;" id="student-conn-status">🟢 已連線</span>
+            <span class="conn-badge" id="student-conn-status">🟡 連線建立中...</span>
         </div>
         <div class="multi-hint">☑️ 本題為複選題（可勾選 1 至 4 個選項）</div>
-        <h2 id="student-question" style="font-size: 21px; margin-bottom: 18px; line-height: 1.4;">請稍候，等待講師開始題目...</h2>
+        <h2 id="student-question" style="font-size: 21px; margin-bottom: 18px; line-height: 1.4;">請稍候，正在連線至講師課堂...</h2>
         
         <div id="student-options"></div>
 
@@ -198,24 +215,79 @@
     </div>
 </div>
 
+<!-- QR Code 放大投影視窗 -->
+<div id="qr-modal" class="qr-modal hidden" onclick="closeQrModal()">
+    <div class="qr-modal-card" onclick="event.stopPropagation()">
+        <h2 style="margin-bottom: 8px;">📱 掃描 QR Code 加入課堂互動</h2>
+        <div id="qrcode-large"></div>
+        <p style="color: #475569; font-size: 14px; margin-bottom: 16px;" id="modal-join-url"></p>
+        <button class="btn btn-secondary" onclick="closeQrModal()">關閉放大視窗</button>
+    </div>
+</div>
+
 <script>
-    const LETTERS = new Array('A', 'B', 'C', 'D');
-    let questions = new Array();
+    const LETTERS = ['A', 'B', 'C', 'D'];
+
+    // 強化 Chrome / 跨網路 WebRTC STUN 設定，提升連線成功率與穿透力
+    const PEER_CONFIG = {
+        debug: 1,
+        pingInterval: 5000,
+        config: {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' },
+                { urls: 'stun:stun2.l.google.com:19302' },
+                { urls: 'stun:stun3.l.google.com:19302' },
+                { urls: 'stun:stun4.l.google.com:19302' },
+                { urls: 'stun:global.stun.twilio.com:3478' }
+            ],
+            iceCandidatePoolSize: 10
+        }
+    };
+
+    let questions = [];
     let currentQIndex = 0;
     let isLocked = false;
-    
+    let currentJoinUrl = '';
+
+    // 講師端連線狀態管理（以穩定 studentUuid 追蹤學生，避免重連重複計數）
     let peer = null;
-    let studentConnections = new Array();
+    let hostPeerId = null;
+    let hostReconnectTimer = null;
+    let hostHeartbeatTimer = null;
+    let broadcastThrottleTimer = null;
+    let pendingBroadcastFull = false;
+    let pendingBroadcastVotes = false;
+    const connectedStudents = new Map(); // studentUuid -> { conn, lastSeen }
+
+    // 學生端連線狀態管理
     let hostConnection = null;
-    let studentChoices = new Array();
+    let targetHostIdGlobal = null;
+    let studentChoices = [];
+    let studentVoteSeq = 0; // 單調遞增序號，確保重新填答與送出順序不衝突
+    let studentReconnectTimer = null;
+    let studentReconnectAttempts = 0;
+    let studentHeartbeatTimer = null;
+    let lastPongTime = 0;
+
+    // 產生或取得該瀏覽器分頁穩定的學生識別碼（斷線重連不重複計數）
+    function getOrCreateStudentUuid() {
+        let uid = sessionStorage.getItem('quiz_student_uuid');
+        if (!uid) {
+            uid = 'stu_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 9);
+            sessionStorage.setItem('quiz_student_uuid', uid);
+        }
+        return uid;
+    }
 
     // 預設產生 10 題範本
     function initDefaultQuestions() {
         questions = Array.from({ length: 10 }, function(_, i) {
             return {
                 text: '第 ' + (i + 1) + ' 題（複選）：請在此輸入題目內容？',
-                options: new Array('選項 A 內容', '選項 B 內容', '選項 C 內容', '選項 D 內容'),
-                studentVotes: {},
+                options: ['選項 A 內容', '選項 B 內容', '選項 C 內容', '選項 D 內容'],
+                studentVotes: {}, // key: studentUuid, value: number[]
+                voteSeqMap: {},   // key: studentUuid, value: number (最新序號)
                 round: 1
             };
         });
@@ -235,7 +307,7 @@
                 optionsHtml +=
                     '<div class="option-row">' +
                         '<span class="option-letter">' + letter + '.</span>' +
-                        '<input type="text" value="' + escapeHtml(q.options.at(optIdx)) + '" oninput="updateOption(' + qIdx + ', ' + optIdx + ', this.value)" placeholder="輸入選項 ' + letter + '">' +
+                        '<input type="text" value="' + escapeHtml(q.options[optIdx]) + '" oninput="updateOption(' + qIdx + ', ' + optIdx + ', this.value)" placeholder="輸入選項 ' + letter + '">' +
                     '</div>';
             });
             const deleteBtnHtml = questions.length > 1
@@ -253,18 +325,23 @@
     }
 
     function escapeHtml(str) {
-        return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+        return String(str)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;");
     }
 
-    function updateQuestionText(qIdx, val) { questions.at(qIdx).text = val; }
-    function updateOption(qIdx, optIdx, val) { questions.at(qIdx).options.splice(optIdx, 1, val); }
+    function updateQuestionText(qIdx, val) { questions[qIdx].text = val; }
+    function updateOption(qIdx, optIdx, val) { questions[qIdx].options[optIdx] = val; }
 
     function addQuestionCard() {
         const num = questions.length + 1;
         questions.push({
             text: '第 ' + num + ' 題（複選）：請在此輸入題目內容？',
-            options: new Array('選項 A 內容', '選項 B 內容', '選項 C 內容', '選項 D 內容'),
+            options: ['選項 A 內容', '選項 B 內容', '選項 C 內容', '選項 D 內容'],
             studentVotes: {},
+            voteSeqMap: {},
             round: 1
         });
         renderSetupList();
@@ -283,14 +360,15 @@
         const raw = document.getElementById('batch-textarea').value.trim();
         if (!raw) return;
         const lines = raw.split('\n').filter(function(l) { return l.trim() !== ''; });
-        const parsed = new Array();
+        const parsed = [];
         lines.forEach(function(line) {
             const parts = line.split('|').map(function(p) { return p.trim(); });
             if (parts.length >= 5) {
                 parsed.push({
-                    text: parts.at(0),
-                    options: new Array(parts.at(1), parts.at(2), parts.at(3), parts.at(4)),
+                    text: parts[0],
+                    options: [parts[1], parts[2], parts[3], parts[4]],
                     studentVotes: {},
+                    voteSeqMap: {},
                     round: 1
                 });
             }
@@ -307,14 +385,274 @@
 
     // 判斷啟動模式（講師端 vs 學生端）
     const urlParams = new URLSearchParams(window.location.search);
-    const hostId = urlParams.get('host');
-    if (hostId) {
-        initStudentMode(hostId);
+    const hostIdParam = urlParams.get('host');
+    if (hostIdParam) {
+        initStudentMode(hostIdParam);
     } else {
         initDefaultQuestions();
     }
 
     // ================= 講師端邏輯 =================
+    function setHostStatus(statusType, text) {
+        const el = document.getElementById('host-server-status');
+        if (!el) return;
+        el.className = 'conn-badge' + (statusType === 'reconnecting' ? ' reconnecting' : statusType === 'offline' ? ' offline' : '');
+        el.innerText = text;
+    }
+
+    function renderQrCodes(joinUrl) {
+        currentJoinUrl = joinUrl;
+        document.getElementById('share-url').innerText = joinUrl;
+        document.getElementById('modal-join-url').innerText = joinUrl;
+
+        const qrContainer = document.getElementById('qrcode');
+        qrContainer.innerHTML = '';
+        new QRCode(qrContainer, {
+            text: joinUrl,
+            width: 190,
+            height: 190,
+            colorDark: '#000000',
+            colorLight: '#ffffff',
+            correctLevel: QRCode.CorrectLevel.M
+        });
+
+        const qrLarge = document.getElementById('qrcode-large');
+        qrLarge.innerHTML = '';
+        new QRCode(qrLarge, {
+            text: joinUrl,
+            width: 300,
+            height: 300,
+            colorDark: '#000000',
+            colorLight: '#ffffff',
+            correctLevel: QRCode.CorrectLevel.M
+        });
+    }
+
+    function openQrModal() {
+        if (!currentJoinUrl) return;
+        document.getElementById('qr-modal').classList.remove('hidden');
+    }
+
+    function closeQrModal() {
+        document.getElementById('qr-modal').classList.add('hidden');
+    }
+
+    function copyJoinUrl() {
+        if (!currentJoinUrl) return;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(currentJoinUrl).then(function() {
+                alert('已複製課堂加入連結！');
+            });
+        } else {
+            prompt('請複製以下課堂連結：', currentJoinUrl);
+        }
+    }
+
+    function initHostPeer() {
+        if (peer && !peer.destroyed) {
+            if (peer.disconnected) {
+                setHostStatus('reconnecting', '🟡 正在重新連線至伺服器...');
+                peer.reconnect();
+            }
+            return;
+        }
+
+        // 嘗試沿用同分頁曾使用的 hostPeerId，減少意外重建時 QR Code 變動
+        const savedHostId = sessionStorage.getItem('quiz_host_peer_id');
+        peer = savedHostId ? new Peer(savedHostId, PEER_CONFIG) : new Peer(PEER_CONFIG);
+
+        peer.on('open', function(id) {
+            hostPeerId = id;
+            sessionStorage.setItem('quiz_host_peer_id', id);
+            setHostStatus('online', '🟢 連線服務就緒');
+
+            const baseUrl = window.location.href.split('?')[0].split('#')[0];
+            const joinUrl = baseUrl + '?host=' + encodeURIComponent(id);
+            renderQrCodes(joinUrl);
+            loadQuestion(currentQIndex);
+        });
+
+        peer.on('connection', function(conn) {
+            setupIncomingStudentConn(conn);
+        });
+
+        peer.on('disconnected', function() {
+            setHostStatus('reconnecting', '🟡 網路波動，自動重連中...');
+            scheduleHostReconnect();
+        });
+
+        peer.on('error', function(err) {
+            console.warn('[Host Peer Error]', err.type, err);
+            if (err.type === 'unavailable-id') {
+                // 若舊 ID 仍被佔用，清除並改用新 ID
+                sessionStorage.removeItem('quiz_host_peer_id');
+                try { peer.destroy(); } catch (e) {}
+                peer = null;
+                setTimeout(initHostPeer, 500);
+            } else if (err.type === 'network' || err.type === 'server-error' || err.type === 'socket-error' || err.type === 'socket-closed') {
+                setHostStatus('reconnecting', '🟡 連線異常，自動重連中...');
+                scheduleHostReconnect();
+            }
+        });
+
+        // 啟動講師端心跳偵測，清理已斷線的殭屍連線
+        if (hostHeartbeatTimer) clearInterval(hostHeartbeatTimer);
+        hostHeartbeatTimer = setInterval(function() {
+            const now = Date.now();
+            let changed = false;
+            connectedStudents.forEach(function(info, uid) {
+                if (!info.conn || !info.conn.open || (now - info.lastSeen > 25000)) {
+                    try { if (info.conn) info.conn.close(); } catch (e) {}
+                    connectedStudents.delete(uid);
+                    changed = true;
+                } else {
+                    try {
+                        info.conn.send({ type: 'PING', ts: now });
+                    } catch (e) {}
+                }
+            });
+            if (changed) {
+                updateOnlineCount();
+                renderHostChart();
+            }
+        }, 8000);
+    }
+
+    function scheduleHostReconnect() {
+        if (hostReconnectTimer) return;
+        hostReconnectTimer = setTimeout(function() {
+            hostReconnectTimer = null;
+            if (!peer || peer.destroyed) {
+                initHostPeer();
+            } else if (peer.disconnected) {
+                try {
+                    peer.reconnect();
+                } catch (e) {
+                    try { peer.destroy(); } catch (ex) {}
+                    peer = null;
+                    initHostPeer();
+                }
+            }
+        }, 2000);
+    }
+
+    function setupIncomingStudentConn(conn) {
+        let boundStudentUuid = null;
+
+        conn.on('open', function() {
+            // 先推送當前題目狀態，等待學生回報 HELLO (包含 studentUuid)
+            sendStateToStudent(conn, null);
+        });
+
+        conn.on('data', function(msg) {
+            if (!msg || typeof msg !== 'object') return;
+            const now = Date.now();
+
+            if (msg.type === 'HELLO' || msg.type === 'PING') {
+                const uid = msg.studentUuid || conn.peer;
+                boundStudentUuid = uid;
+
+                // 若同一學生重連，關閉舊連線並替換為新連線（不重複計數）
+                const existing = connectedStudents.get(uid);
+                if (existing && existing.conn && existing.conn !== conn) {
+                    try { existing.conn.close(); } catch (e) {}
+                }
+                connectedStudents.set(uid, { conn: conn, lastSeen: now });
+                updateOnlineCount();
+                renderHostChart();
+
+                if (msg.type === 'HELLO') {
+                    // 回傳該學生在目前題目的既有作答紀錄（斷線重連自動恢復已選項目）
+                    const q = questions[currentQIndex];
+                    const existingChoices = q.studentVotes[uid] || [];
+                    sendStateToStudent(conn, existingChoices);
+                } else if (msg.type === 'PING') {
+                    try { conn.send({ type: 'PONG', ts: msg.ts }); } catch (e) {}
+                }
+                return;
+            }
+
+            if (msg.type === 'PONG') {
+                if (boundStudentUuid && connectedStudents.has(boundStudentUuid)) {
+                    connectedStudents.get(boundStudentUuid).lastSeen = now;
+                }
+                return;
+            }
+
+            if (msg.type === 'VOTE_MULTI') {
+                const uid = msg.studentUuid || boundStudentUuid || conn.peer;
+                boundStudentUuid = uid;
+                connectedStudents.set(uid, { conn: conn, lastSeen: now });
+
+                const q = questions[currentQIndex];
+                const incomingRound = msg.round || 1;
+                const currentRound = q.round || 1;
+
+                // 僅接受當前題號、當前輪次、且尚未鎖定的作答
+                if (msg.qIndex !== currentQIndex || incomingRound !== currentRound || isLocked) {
+                    // 若輪次或狀態不一致，主動將最新狀態同步給該學生
+                    sendStateToStudent(conn, q.studentVotes[uid] || []);
+                    return;
+                }
+
+                // 順序號檢查：防止快速連點或重新填答時舊封包覆蓋新封包
+                const seq = typeof msg.seq === 'number' ? msg.seq : 0;
+                const lastSeq = q.voteSeqMap[uid] || 0;
+                if (seq < lastSeq) {
+                    return;
+                }
+                q.voteSeqMap[uid] = seq;
+
+                const rawChoices = Array.isArray(msg.choices) ? msg.choices : [];
+                const cleanChoices = Array.from(new Set(
+                    rawChoices.filter(function(c) { return Number.isInteger(c) && c >= 0 && c < 4; })
+                )).sort(function(a, b) { return a - b; });
+
+                if (cleanChoices.length === 0) {
+                    delete q.studentVotes[uid];
+                } else {
+                    q.studentVotes[uid] = cleanChoices;
+                }
+
+                // 回傳 ACK 確認已同步，並更新統計圖表與節流廣播
+                try {
+                    conn.send({
+                        type: 'VOTE_ACK',
+                        qIndex: currentQIndex,
+                        round: currentRound,
+                        seq: seq,
+                        confirmedChoices: cleanChoices
+                    });
+                } catch (e) {}
+
+                updateOnlineCount();
+                renderHostChart();
+                scheduleThrottledBroadcast(false);
+            }
+        });
+
+        conn.on('close', function() {
+            if (boundStudentUuid && connectedStudents.has(boundStudentUuid)) {
+                const info = connectedStudents.get(boundStudentUuid);
+                if (info.conn === conn) {
+                    connectedStudents.delete(boundStudentUuid);
+                    updateOnlineCount();
+                    renderHostChart();
+                }
+            }
+        });
+
+        conn.on('error', function() {
+            if (boundStudentUuid && connectedStudents.has(boundStudentUuid)) {
+                const info = connectedStudents.get(boundStudentUuid);
+                if (info.conn === conn) {
+                    connectedStudents.delete(boundStudentUuid);
+                    updateOnlineCount();
+                }
+            }
+        });
+    }
+
     function startSession() {
         if (questions.length === 0) {
             alert('請至少建立一題！');
@@ -323,48 +661,20 @@
         document.getElementById('host-setup').classList.add('hidden');
         document.getElementById('host-live').classList.remove('hidden');
 
-        if (!peer) {
-            peer = new Peer();
-            peer.on('open', function(id) {
-                const joinUrl = window.location.origin + window.location.pathname + '?host=' + id;
-                document.getElementById('share-url').innerText = joinUrl;
-                document.getElementById('qrcode').innerHTML = '';
-                new QRCode(document.getElementById('qrcode'), { text: joinUrl, width: 170, height: 170 });
-                loadQuestion(currentQIndex);
-            });
-            peer.on('connection', function(conn) {
-                studentConnections.push(conn);
-                updateOnlineCount();
-                renderHostChart();
-                conn.on('open', function() {
-                    sendStateToStudent(conn);
-                });
-                conn.on('data', function(msg) {
-                    if (msg.type === 'VOTE_MULTI' && msg.qIndex === currentQIndex && !isLocked) {
-                        const q = questions.at(currentQIndex);
-                        const choices = Array.isArray(msg.choices) ? msg.choices : new Array();
-                        if (choices.length === 0) {
-                            delete q.studentVotes[conn.peer];
-                        } else {
-                            q.studentVotes[conn.peer] = Array.from(new Set(choices)).sort(function(a, b) { return a - b; });
-                        }
-                        renderHostChart();
-                        broadcastVotesUpdate();
-                    }
-                });
-                conn.on('close', function() {
-                    studentConnections = studentConnections.filter(function(c) { return c !== conn; });
-                    updateOnlineCount();
-                    renderHostChart();
-                });
-            });
+        if (!peer || peer.destroyed) {
+            initHostPeer();
         } else {
+            if (peer.disconnected) peer.reconnect();
             loadQuestion(currentQIndex);
         }
     }
 
     function getActiveStudentCount() {
-        return studentConnections.filter(function(c) { return c.open; }).length;
+        let count = 0;
+        connectedStudents.forEach(function(info) {
+            if (info.conn && info.conn.open) count++;
+        });
+        return count;
     }
 
     function updateOnlineCount() {
@@ -380,11 +690,11 @@
     function getVoteStats(q) {
         const voters = Object.values(q.studentVotes);
         const totalVoters = voters.length;
-        const optionCounts = new Array(4).fill(0);
+        const optionCounts = [0, 0, 0, 0];
         voters.forEach(function(choiceArr) {
             choiceArr.forEach(function(idx) {
                 if (idx >= 0 && idx < 4) {
-                    optionCounts.splice(idx, 1, optionCounts.at(idx) + 1);
+                    optionCounts[idx] += 1;
                 }
             });
         });
@@ -394,7 +704,7 @@
     function loadQuestion(index) {
         currentQIndex = index;
         isLocked = false;
-        const q = questions.at(currentQIndex);
+        const q = questions[currentQIndex];
         document.getElementById('live-progress').innerText = '第 ' + (currentQIndex + 1) + ' / ' + questions.length + ' 題（複選）';
         document.getElementById('live-question').innerText = q.text;
         
@@ -417,7 +727,7 @@
 
     function lockVoting() {
         isLocked = true;
-        const q = questions.at(currentQIndex);
+        const q = questions[currentQIndex];
         
         const badge = document.getElementById('live-phase-badge');
         badge.className = 'status-pill status-locked';
@@ -426,7 +736,7 @@
 
         const stats = getVoteStats(q);
         const totalVoters = stats.totalVoters;
-        const activeStudents = getActiveStudentCount();
+        const activeStudents = Math.max(getActiveStudentCount(), totalVoters);
         const responseRate = activeStudents === 0 ? 0 : Math.min(100, Math.round((totalVoters / activeStudents) * 100));
 
         const banner = document.getElementById('summary-banner');
@@ -453,8 +763,9 @@
 
     function resetCurrentVotes() {
         if (!confirm('確定要清空本題所有學生的作答紀錄，並讓全班重新填答這一題嗎？')) return;
-        const q = questions.at(currentQIndex);
+        const q = questions[currentQIndex];
         q.studentVotes = {};
+        q.voteSeqMap = {};
         q.round = (q.round || 1) + 1;
         isLocked = false;
         loadQuestion(currentQIndex);
@@ -464,6 +775,7 @@
         if (!confirm('確定要清空「全部題目」的作答紀錄，並從第 1 題重新開始嗎？')) return;
         questions.forEach(function(q) {
             q.studentVotes = {};
+            q.voteSeqMap = {};
             q.round = (q.round || 1) + 1;
         });
         isLocked = false;
@@ -471,42 +783,42 @@
     }
 
     function renderHostChart() {
-        const q = questions.at(currentQIndex);
+        const q = questions[currentQIndex];
         const container = document.getElementById('chart-container');
         container.innerHTML = '';
         
         const stats = getVoteStats(q);
         const totalVoters = stats.totalVoters;
         const optionCounts = stats.optionCounts;
-        const activeStudents = getActiveStudentCount();
+        const activeStudents = Math.max(getActiveStudentCount(), totalVoters);
         const responseRate = activeStudents === 0 ? 0 : Math.min(100, Math.round((totalVoters / activeStudents) * 100));
 
         document.getElementById('total-voters').innerText = totalVoters;
         document.getElementById('response-rate-text').innerText = '全班作答率：' + responseRate + '% (' + totalVoters + '/' + activeStudents + ' 人)';
 
-        const colors = new Array('#2563eb', '#8b5cf6', '#f59e0b', '#06b6d4');
+        const colors = ['#2563eb', '#8b5cf6', '#f59e0b', '#06b6d4'];
         q.options.forEach(function(opt, idx) {
-            const count = optionCounts.at(idx);
+            const count = optionCounts[idx];
             const percent = totalVoters === 0 ? 0 : Math.round((count / totalVoters) * 100);
             
             const item = document.createElement('div');
             item.className = 'bar-item';
             item.innerHTML =
                 '<div class="bar-header">' +
-                    '<span>(' + LETTERS.at(idx) + ') ' + escapeHtml(opt) + '</span>' +
+                    '<span>(' + LETTERS[idx] + ') ' + escapeHtml(opt) + '</span>' +
                     '<span>' + count + ' 人選 (' + percent + '%)</span>' +
                 '</div>' +
                 '<div class="bar-bg">' +
-                    '<div class="bar-fill" style="width: ' + percent + '%; background-color: ' + colors.at(idx) + ';"></div>' +
+                    '<div class="bar-fill" style="width: ' + percent + '%; background-color: ' + colors[idx] + ';"></div>' +
                 '</div>';
             container.appendChild(item);
         });
     }
 
-    function getPayloadForStudent() {
-        const q = questions.at(currentQIndex);
+    function getPayloadForStudent(yourChoices) {
+        const q = questions[currentQIndex];
         const stats = getVoteStats(q);
-        return {
+        const payload = {
             qIndex: currentQIndex,
             round: q.round || 1,
             totalQ: questions.length,
@@ -516,86 +828,332 @@
             optionCounts: stats.optionCounts,
             isLocked: isLocked
         };
+        if (Array.isArray(yourChoices)) {
+            payload.yourChoices = yourChoices;
+        }
+        return payload;
     }
 
-    function sendStateToStudent(conn) {
-        if (conn.open) {
-            conn.send({ type: 'SYNC_STATE', data: getPayloadForStudent() });
+    function sendStateToStudent(conn, yourChoices) {
+        if (conn && conn.open) {
+            try {
+                conn.send({ type: 'SYNC_STATE', data: getPayloadForStudent(yourChoices) });
+            } catch (e) {}
         }
     }
 
+    // 多人高併發節流廣播：合併 120ms 內的多次投票更新，避免 WebRTC 阻塞
+    function scheduleThrottledBroadcast(isFull) {
+        if (isFull) pendingBroadcastFull = true;
+        else pendingBroadcastVotes = true;
+
+        if (broadcastThrottleTimer) return;
+        broadcastThrottleTimer = setTimeout(function() {
+            broadcastThrottleTimer = null;
+            if (pendingBroadcastFull) {
+                pendingBroadcastFull = false;
+                pendingBroadcastVotes = false;
+                broadcastFullState();
+            } else if (pendingBroadcastVotes) {
+                pendingBroadcastVotes = false;
+                broadcastVotesUpdate();
+            }
+        }, 120);
+    }
+
     function broadcastFullState() {
-        const payload = getPayloadForStudent();
-        studentConnections.forEach(function(conn) {
-            if (conn.open) conn.send({ type: 'SYNC_STATE', data: payload });
+        const q = questions[currentQIndex];
+        connectedStudents.forEach(function(info, uid) {
+            if (info.conn && info.conn.open) {
+                const userChoices = q.studentVotes[uid] || [];
+                sendStateToStudent(info.conn, userChoices);
+            }
         });
     }
 
     function broadcastVotesUpdate() {
-        const q = questions.at(currentQIndex);
+        const q = questions[currentQIndex];
         const stats = getVoteStats(q);
-        studentConnections.forEach(function(conn) {
-            if (conn.open) {
-                conn.send({
-                    type: 'VOTES_UPDATE',
-                    qIndex: currentQIndex,
-                    totalVoters: stats.totalVoters,
-                    optionCounts: stats.optionCounts
-                });
+        const msgObj = {
+            type: 'VOTES_UPDATE',
+            qIndex: currentQIndex,
+            round: q.round || 1,
+            totalVoters: stats.totalVoters,
+            optionCounts: stats.optionCounts
+        };
+        connectedStudents.forEach(function(info) {
+            if (info.conn && info.conn.open) {
+                try {
+                    info.conn.send(msgObj);
+                } catch (e) {}
             }
         });
     }
+
+    // Chrome 分頁切回前景時自動檢查講師連線
+    document.addEventListener('visibilitychange', function() {
+        if (document.visibilityState === 'visible') {
+            if (hostIdParam) {
+                // 學生端回到前景立即檢查連線
+                if (!hostConnection || !hostConnection.open) {
+                    manualStudentReconnect();
+                } else {
+                    try {
+                        hostConnection.send({ type: 'HELLO', studentUuid: getOrCreateStudentUuid() });
+                    } catch (e) {
+                        manualStudentReconnect();
+                    }
+                }
+            } else if (peer && !document.getElementById('host-live').classList.contains('hidden')) {
+                if (peer.disconnected) {
+                    scheduleHostReconnect();
+                }
+            }
+        }
+    });
 
     // ================= 學生端邏輯 =================
     let studentCurrentQIndex = -1;
     let studentCurrentRound = -1;
     let latestState = null;
 
+    function setStudentConnUI(state, text) {
+        const statusEl = document.getElementById('student-conn-status');
+        const barEl = document.getElementById('student-reconnect-bar');
+        const msgEl = document.getElementById('student-reconnect-msg');
+
+        if (state === 'connected') {
+            statusEl.className = 'conn-badge';
+            statusEl.innerText = text || '🟢 已連線至課堂';
+            barEl.classList.add('hidden');
+        } else if (state === 'connecting') {
+            statusEl.className = 'conn-badge reconnecting';
+            statusEl.innerText = text || '🟡 連線中...';
+        } else {
+            statusEl.className = 'conn-badge offline';
+            statusEl.innerText = text || '🔴 連線中斷';
+            msgEl.innerText = '⚠️ 與講師端連線中斷，系統正在自動重連...';
+            barEl.classList.remove('hidden');
+        }
+    }
+
     function initStudentMode(targetHostId) {
+        targetHostIdGlobal = targetHostId;
         document.getElementById('host-setup').classList.add('hidden');
         document.getElementById('student-view').classList.remove('hidden');
-        peer = new Peer();
-        peer.on('open', function() {
-            hostConnection = peer.connect(targetHostId);
-            
-            hostConnection.on('open', function() {
-                document.getElementById('student-conn-status').innerText = '🟢 已連線至課堂';
-            });
-            hostConnection.on('data', function(msg) {
-                if (msg.type === 'SYNC_STATE') {
-                    latestState = msg.data;
-                    const incomingRound = latestState.round || 1;
-                    if (studentCurrentQIndex !== latestState.qIndex || studentCurrentRound !== incomingRound) {
-                        studentCurrentQIndex = latestState.qIndex;
-                        studentCurrentRound = incomingRound;
-                        studentChoices = new Array();
-                    }
-                    renderStudentUI();
-                } else if (msg.type === 'VOTES_UPDATE' && latestState && msg.qIndex === latestState.qIndex) {
-                    latestState.totalVoters = msg.totalVoters;
-                    latestState.optionCounts = msg.optionCounts;
-                    if (studentChoices.length > 0 || latestState.isLocked) {
-                        renderStudentResultBars();
-                    }
+
+        connectStudentPeer();
+
+        // 學生端心跳保活與斷線偵測（每 5 秒檢查一次）
+        if (studentHeartbeatTimer) clearInterval(studentHeartbeatTimer);
+        studentHeartbeatTimer = setInterval(function() {
+            if (hostConnection && hostConnection.open) {
+                try {
+                    hostConnection.send({
+                        type: 'PING',
+                        studentUuid: getOrCreateStudentUuid(),
+                        ts: Date.now()
+                    });
+                } catch (e) {
+                    scheduleStudentReconnect();
                 }
+                if (lastPongTime > 0 && Date.now() - lastPongTime > 16000) {
+                    // 超過 16 秒未收到講師端回應，判定為靜默斷線並主動重連
+                    scheduleStudentReconnect();
+                }
+            } else {
+                scheduleStudentReconnect();
+            }
+        }, 5000);
+    }
+
+    function connectStudentPeer() {
+        if (studentReconnectTimer) {
+            clearTimeout(studentReconnectTimer);
+            studentReconnectTimer = null;
+        }
+        setStudentConnUI('connecting', '🟡 正在連線至課堂...');
+
+        if (!peer || peer.destroyed) {
+            peer = new Peer(PEER_CONFIG);
+            peer.on('open', function() {
+                openDataConnToHost();
             });
-            hostConnection.on('close', function() {
-                document.getElementById('student-conn-status').innerText = '🔴 連線已中斷，請重新掃碼';
-                document.getElementById('student-conn-status').style.color = '#dc2626';
+            peer.on('disconnected', function() {
+                setStudentConnUI('offline', '🟡 網路中斷，重連中...');
+                scheduleStudentReconnect();
+            });
+            peer.on('error', function(err) {
+                console.warn('[Student Peer Error]', err.type, err);
+                setStudentConnUI('offline', '🔴 連線異常，重連中...');
+                scheduleStudentReconnect();
+            });
+        } else if (peer.disconnected) {
+            try {
+                peer.reconnect();
+                setTimeout(openDataConnToHost, 600);
+            } catch (e) {
+                try { peer.destroy(); } catch (ex) {}
+                peer = null;
+                scheduleStudentReconnect();
+            }
+        } else if (peer.open) {
+            openDataConnToHost();
+        }
+    }
+
+    function openDataConnToHost() {
+        if (!peer || !peer.open || !targetHostIdGlobal) return;
+        if (hostConnection && hostConnection.open) return;
+
+        try {
+            if (hostConnection) hostConnection.close();
+        } catch (e) {}
+
+        const conn = peer.connect(targetHostIdGlobal, { reliable: true });
+        hostConnection = conn;
+
+        // 連線逾時保護：若 6 秒內未完成 WebRTC 握手則自動重試
+        const connectTimeout = setTimeout(function() {
+            if (!conn.open) {
+                try { conn.close(); } catch (e) {}
+                scheduleStudentReconnect();
+            }
+        }, 6000);
+
+        conn.on('open', function() {
+            clearTimeout(connectTimeout);
+            studentReconnectAttempts = 0;
+            lastPongTime = Date.now();
+            setStudentConnUI('connected', '🟢 已連線至課堂');
+
+            // 傳送 HELLO 註冊穩定 studentUuid，讓講師端同步題目與既有作答
+            conn.send({
+                type: 'HELLO',
+                studentUuid: getOrCreateStudentUuid()
             });
         });
+
+        conn.on('data', function(msg) {
+            if (!msg || typeof msg !== 'object') return;
+            lastPongTime = Date.now();
+
+            if (msg.type === 'PING') {
+                try {
+                    conn.send({ type: 'PONG', studentUuid: getOrCreateStudentUuid(), ts: msg.ts });
+                } catch (e) {}
+                return;
+            }
+
+            if (msg.type === 'PONG') {
+                return;
+            }
+
+            if (msg.type === 'VOTE_ACK') {
+                if (latestState && msg.qIndex === latestState.qIndex && msg.round === (latestState.round || 1)) {
+                    if (msg.seq === studentVoteSeq && Array.isArray(msg.confirmedChoices)) {
+                        studentChoices = msg.confirmedChoices.slice();
+                        renderStudentUI();
+                    }
+                }
+                return;
+            }
+
+            if (msg.type === 'SYNC_STATE') {
+                latestState = msg.data;
+                const incomingRound = latestState.round || 1;
+                const isNewQuestionOrRound = (studentCurrentQIndex !== latestState.qIndex || studentCurrentRound !== incomingRound);
+
+                if (isNewQuestionOrRound) {
+                    studentCurrentQIndex = latestState.qIndex;
+                    studentCurrentRound = incomingRound;
+                    studentVoteSeq = 0;
+                    studentChoices = Array.isArray(latestState.yourChoices) ? latestState.yourChoices.slice() : [];
+                } else if (Array.isArray(latestState.yourChoices)) {
+                    // 斷線重連後若伺服器已有作答紀錄，自動同步恢復
+                    studentChoices = latestState.yourChoices.slice();
+                }
+                renderStudentUI();
+            } else if (msg.type === 'VOTES_UPDATE' && latestState && msg.qIndex === latestState.qIndex && (msg.round || 1) === (latestState.round || 1)) {
+                latestState.totalVoters = msg.totalVoters;
+                latestState.optionCounts = msg.optionCounts;
+                if (studentChoices.length > 0 || latestState.isLocked) {
+                    renderStudentResultBars();
+                }
+            }
+        });
+
+        conn.on('close', function() {
+            clearTimeout(connectTimeout);
+            setStudentConnUI('offline', '🔴 連線已中斷');
+            scheduleStudentReconnect();
+        });
+
+        conn.on('error', function() {
+            clearTimeout(connectTimeout);
+            setStudentConnUI('offline', '🔴 連線異常');
+            scheduleStudentReconnect();
+        });
+    }
+
+    function scheduleStudentReconnect() {
+        if (studentReconnectTimer) return;
+        studentReconnectAttempts++;
+        // 指數退避（1.5s ~ 上限 6s），避免多人同時斷線造成瞬時風暴
+        const delay = Math.min(6000, 1200 + studentReconnectAttempts * 700);
+        studentReconnectTimer = setTimeout(function() {
+            studentReconnectTimer = null;
+            connectStudentPeer();
+        }, delay);
+    }
+
+    function manualStudentReconnect() {
+        if (studentReconnectTimer) {
+            clearTimeout(studentReconnectTimer);
+            studentReconnectTimer = null;
+        }
+        studentReconnectAttempts = 0;
+        if (peer && !peer.destroyed) {
+            try { peer.destroy(); } catch (e) {}
+        }
+        peer = null;
+        hostConnection = null;
+        connectStudentPeer();
+    }
+
+    function sendStudentVoteToHost() {
+        if (!latestState || latestState.isLocked) return;
+        studentVoteSeq++;
+        const payload = {
+            type: 'VOTE_MULTI',
+            studentUuid: getOrCreateStudentUuid(),
+            qIndex: latestState.qIndex,
+            round: latestState.round || 1,
+            seq: studentVoteSeq,
+            choices: studentChoices.slice()
+        };
+
+        if (hostConnection && hostConnection.open) {
+            try {
+                hostConnection.send(payload);
+            } catch (e) {
+                scheduleStudentReconnect();
+            }
+        } else {
+            // 若點擊當下恰好斷線，立即觸發重連，連上後自動補送當前選項
+            manualStudentReconnect();
+            setTimeout(function() {
+                if (hostConnection && hostConnection.open) {
+                    try { hostConnection.send(payload); } catch (e) {}
+                }
+            }, 1200);
+        }
     }
 
     function clearStudentChoices() {
         if (!latestState || latestState.isLocked) return;
-        studentChoices = new Array();
-        if (hostConnection && hostConnection.open) {
-            hostConnection.send({
-                type: 'VOTE_MULTI',
-                qIndex: latestState.qIndex,
-                choices: new Array()
-            });
-        }
+        studentChoices = [];
+        sendStudentVoteToHost();
         renderStudentUI();
     }
 
@@ -622,24 +1180,18 @@
             }
 
             btn.innerHTML =
-                '<div><span>(' + LETTERS.at(idx) + ')</span> <span>' + escapeHtml(opt) + '</span></div>' +
+                '<div><span>(' + LETTERS[idx] + ')</span> <span>' + escapeHtml(opt) + '</span></div>' +
                 '<span style="font-size: 14px; white-space: nowrap;">' + statusTag + '</span>';
             btn.onclick = function() {
                 if (latestState.isLocked) return;
-                if (hostConnection && hostConnection.open) {
-                    if (studentChoices.includes(idx)) {
-                        studentChoices = studentChoices.filter(function(i) { return i !== idx; });
-                    } else {
-                        studentChoices.push(idx);
-                        studentChoices.sort(function(a, b) { return a - b; });
-                    }
-                    hostConnection.send({
-                        type: 'VOTE_MULTI',
-                        qIndex: latestState.qIndex,
-                        choices: studentChoices
-                    });
-                    renderStudentUI();
+                if (studentChoices.includes(idx)) {
+                    studentChoices = studentChoices.filter(function(i) { return i !== idx; });
+                } else {
+                    studentChoices.push(idx);
+                    studentChoices.sort(function(a, b) { return a - b; });
                 }
+                sendStudentVoteToHost();
+                renderStudentUI();
             };
             optionsContainer.appendChild(btn);
         });
@@ -660,13 +1212,13 @@
 
             if (latestState.isLocked) {
                 const myLetters = studentChoices.length > 0
-                    ? '您最終選擇了 ' + studentChoices.map(function(i) { return '(' + LETTERS.at(i) + ')'; }).join('、') + '。'
+                    ? '您最終選擇了 ' + studentChoices.map(function(i) { return '(' + LETTERS[i] + ')'; }).join('、') + '。'
                     : '您本題未作答。';
                 banner.style.background = '#fef3c7';
                 banner.style.color = '#92400e';
                 banner.innerText = '🔒 本題投票已結束，' + myLetters + '請等待講師切換下一題。';
             } else {
-                const myLetters = studentChoices.map(function(i) { return '(' + LETTERS.at(i) + ')'; }).join('、');
+                const myLetters = studentChoices.map(function(i) { return '(' + LETTERS[i] + ')'; }).join('、');
                 banner.style.background = '#dbeafe';
                 banner.style.color = '#1e40af';
                 banner.innerText = '✅ 您目前已選：' + myLetters + '。講師截止前皆可自由增減或點擊上方按鈕重新填答！';
@@ -684,13 +1236,13 @@
         const barsContainer = document.getElementById('student-bars');
         barsContainer.innerHTML = '';
         latestState.options.forEach(function(opt, idx) {
-            const count = latestState.optionCounts.at(idx);
+            const count = latestState.optionCounts[idx] || 0;
             const percent = total === 0 ? 0 : Math.round((count / total) * 100);
             const div = document.createElement('div');
             div.className = 'mini-bar-item';
             div.innerHTML =
                 '<div class="mini-bar-text">' +
-                    '<span>(' + LETTERS.at(idx) + ') ' + escapeHtml(opt) + '</span>' +
+                    '<span>(' + LETTERS[idx] + ') ' + escapeHtml(opt) + '</span>' +
                     '<span>' + count + ' 人選 (' + percent + '%)</span>' +
                 '</div>' +
                 '<div class="mini-bar-bg">' +
