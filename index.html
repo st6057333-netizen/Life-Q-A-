@@ -306,7 +306,8 @@
     }
 
     const urlParams = new URLSearchParams(window.location.search);
-    const hostId = urlParams.get('host');
+    const hashMatch = window.location.hash.match(/host=([^&]+)/);
+    const hostId = urlParams.get('host') || (hashMatch ? hashMatch[1] : null);
     if (hostId) {
         initStudentMode(hostId);
     } else {
@@ -335,7 +336,7 @@
         if (!peer) {
             peer = new Peer(peerConfig);
             peer.on('open', (id) => {
-                const joinUrl = `${window.location.origin}${window.location.pathname}?host=${id}`;
+                const joinUrl = `${window.location.origin}${window.location.pathname}#host=${id}`;
                 document.getElementById('share-url').innerText = joinUrl;
                 document.getElementById('qrcode').innerHTML = '';
                 new QRCode(document.getElementById('qrcode'), { text: joinUrl, width: 170, height: 170 });
