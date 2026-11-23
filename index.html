@@ -109,9 +109,10 @@
         <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 15px;">
             <div>
                 <h1>📝 課堂多題即時互動統計設定（複選題版）</h1>
-                <p style="color: #64748b; margin: 0;">每題皆為複選題，即時統計全班作答率與各選項勾選比例（不設正解）。支援「重新填答」與「全卷重測」。</p>
+                <p style="color: #64748b; margin: 0;">每題皆為複選題，即時統計全班作答率與各選項勾選比例（不設正解）。題目自動儲存於本機，重新整理不會消失。</p>
             </div>
-            <div style="display: flex; gap: 10px;">
+            <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                <button class="btn btn-danger" onclick="clearAllQuestionsAndOptions()">🗑️ 清除題目選項</button>
                 <button class="btn btn-secondary" onclick="toggleBatchImport()">📋 批次貼上題目</button>
                 <button class="btn btn-success" onclick="startSession()">🚀 開始上課互動</button>
             </div>
@@ -130,8 +131,11 @@
             </div>
         </div>
         <div id="questions-list"></div>
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 20px;">
-            <button class="btn btn-secondary" onclick="addQuestionCard()">➕ 新增一題</button>
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 20px;">
+            <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                <button class="btn btn-secondary" onclick="addQuestionCard()">➕ 新增一題</button>
+                <button class="btn btn-danger" onclick="clearAllQuestionsAndOptions()">🗑️ 清除題目選項</button>
+            </div>
             <button class="btn btn-success" style="font-size: 18px; padding: 14px 28px;" onclick="startSession()">🚀 儲存題庫並開始互動</button>
         </div>
     </div>
@@ -227,6 +231,7 @@
 
 <script>
     const LETTERS = ['A', 'B', 'C', 'D'];
+    const STORAGE_KEY_QUESTIONS = 'classroom_quiz_saved_questions_v1';
 
     // 強化 Chrome / 跨網路 WebRTC STUN 設定，提升連線成功率與穿透力
     const PEER_CONFIG = {
@@ -280,17 +285,80 @@
         return uid;
     }
 
-    // 預設產生 10 題範本
+    // 將講師題庫與選項持久化儲存至 localStorage（重新整理不會消失）
+    function saveQuestionsToStorage() {
+        try {
+            const serializable = questions.map(function(q) {
+                return {
+                    text: q.text || '',
+                    options: Array.isArray(q.options) ? q.options.slice(0, 4) : ['', '', '', '']
+                };
+            });
+            localStorage.setItem(STORAGE_KEY_QUESTIONS, JSON.stringify(serializable));
+        } catch (e) {
+            console.warn('無法儲存題庫至 localStorage:', e);
+        }
+    }
+
+    // 從 localStorage 載入已儲存的題庫
+    function loadQuestionsFromStorage() {
+        try {
+            const raw = localStorage.getItem(STORAGE_KEY_QUESTIONS);
+            if (!raw) return null;
+            const parsed = JSON.parse(raw);
+            if (!Array.isArray(parsed) || parsed.length === 0) return null;
+            return parsed.map(function(item) {
+                const opts = Array.isArray(item.options) ? item.options.slice(0, 4) : ['', '', '', ''];
+                while (opts.length < 4) opts.push('');
+                return {
+                    text: typeof item.text === 'string' ? item.text : '',
+                    options: opts,
+                    studentVotes: {},
+                    voteSeqMap: {},
+                    round: 1
+                };
+            });
+        } catch (e) {
+            console.warn('讀取 localStorage 題庫失敗:', e);
+            return null;
+        }
+    }
+
+    // 初始化題庫：優先讀取本機已儲存題目，若無則建立預設 10 題範本
     function initDefaultQuestions() {
-        questions = Array.from({ length: 10 }, function(_, i) {
+        const saved = loadQuestionsFromStorage();
+        if (saved && saved.length > 0) {
+            questions = saved;
+        } else {
+            questions = Array.from({ length: 10 }, function(_, i) {
+                return {
+                    text: '第 ' + (i + 1) + ' 題（複選）：請在此輸入題目內容？',
+                    options: ['選項 A 內容', '選項 B 內容', '選項 C 內容', '選項 D 內容'],
+                    studentVotes: {},
+                    voteSeqMap: {},
+                    round: 1
+                };
+            });
+            saveQuestionsToStorage();
+        }
+        renderSetupList();
+    }
+
+    // 按下清除鍵才清除所有題目與選項
+    function clearAllQuestionsAndOptions() {
+        if (!confirm('確定要清除目前所有題目與選項內容嗎？（清除後將重置為空白題庫）')) return;
+        localStorage.removeItem(STORAGE_KEY_QUESTIONS);
+        questions = Array.from({ length: 10 }, function() {
             return {
-                text: '第 ' + (i + 1) + ' 題（複選）：請在此輸入題目內容？',
-                options: ['選項 A 內容', '選項 B 內容', '選項 C 內容', '選項 D 內容'],
-                studentVotes: {}, // key: studentUuid, value: number[]
-                voteSeqMap: {},   // key: studentUuid, value: number (最新序號)
+                text: '',
+                options: ['', '', '', ''],
+                studentVotes: {},
+                voteSeqMap: {},
                 round: 1
             };
         });
+        currentQIndex = 0;
+        saveQuestionsToStorage();
         renderSetupList();
     }
 
@@ -332,8 +400,15 @@
             .replace(/"/g, "&quot;");
     }
 
-    function updateQuestionText(qIdx, val) { questions[qIdx].text = val; }
-    function updateOption(qIdx, optIdx, val) { questions[qIdx].options[optIdx] = val; }
+    function updateQuestionText(qIdx, val) {
+        questions[qIdx].text = val;
+        saveQuestionsToStorage();
+    }
+
+    function updateOption(qIdx, optIdx, val) {
+        questions[qIdx].options[optIdx] = val;
+        saveQuestionsToStorage();
+    }
 
     function addQuestionCard() {
         const num = questions.length + 1;
@@ -344,11 +419,13 @@
             voteSeqMap: {},
             round: 1
         });
+        saveQuestionsToStorage();
         renderSetupList();
     }
 
     function removeQuestion(qIdx) {
         questions.splice(qIdx, 1);
+        saveQuestionsToStorage();
         renderSetupList();
     }
 
@@ -375,6 +452,7 @@
         });
         if (parsed.length > 0) {
             questions = parsed;
+            saveQuestionsToStorage();
             renderSetupList();
             toggleBatchImport();
             alert('成功匯入 ' + parsed.length + ' 道題目！');
@@ -484,7 +562,6 @@
         peer.on('error', function(err) {
             console.warn('[Host Peer Error]', err.type, err);
             if (err.type === 'unavailable-id') {
-                // 若舊 ID 仍被佔用，清除並改用新 ID
                 sessionStorage.removeItem('quiz_host_peer_id');
                 try { peer.destroy(); } catch (e) {}
                 peer = null;
@@ -540,7 +617,6 @@
         let boundStudentUuid = null;
 
         conn.on('open', function() {
-            // 先推送當前題目狀態，等待學生回報 HELLO (包含 studentUuid)
             sendStateToStudent(conn, null);
         });
 
@@ -552,7 +628,6 @@
                 const uid = msg.studentUuid || conn.peer;
                 boundStudentUuid = uid;
 
-                // 若同一學生重連，關閉舊連線並替換為新連線（不重複計數）
                 const existing = connectedStudents.get(uid);
                 if (existing && existing.conn && existing.conn !== conn) {
                     try { existing.conn.close(); } catch (e) {}
@@ -562,7 +637,6 @@
                 renderHostChart();
 
                 if (msg.type === 'HELLO') {
-                    // 回傳該學生在目前題目的既有作答紀錄（斷線重連自動恢復已選項目）
                     const q = questions[currentQIndex];
                     const existingChoices = q.studentVotes[uid] || [];
                     sendStateToStudent(conn, existingChoices);
@@ -588,14 +662,11 @@
                 const incomingRound = msg.round || 1;
                 const currentRound = q.round || 1;
 
-                // 僅接受當前題號、當前輪次、且尚未鎖定的作答
                 if (msg.qIndex !== currentQIndex || incomingRound !== currentRound || isLocked) {
-                    // 若輪次或狀態不一致，主動將最新狀態同步給該學生
                     sendStateToStudent(conn, q.studentVotes[uid] || []);
                     return;
                 }
 
-                // 順序號檢查：防止快速連點或重新填答時舊封包覆蓋新封包
                 const seq = typeof msg.seq === 'number' ? msg.seq : 0;
                 const lastSeq = q.voteSeqMap[uid] || 0;
                 if (seq < lastSeq) {
@@ -614,7 +685,6 @@
                     q.studentVotes[uid] = cleanChoices;
                 }
 
-                // 回傳 ACK 確認已同步，並更新統計圖表與節流廣播
                 try {
                     conn.send({
                         type: 'VOTE_ACK',
@@ -658,6 +728,7 @@
             alert('請至少建立一題！');
             return;
         }
+        saveQuestionsToStorage();
         document.getElementById('host-setup').classList.add('hidden');
         document.getElementById('host-live').classList.remove('hidden');
 
@@ -685,6 +756,7 @@
     function backToSetup() {
         document.getElementById('host-live').classList.add('hidden');
         document.getElementById('host-setup').classList.remove('hidden');
+        renderSetupList();
     }
 
     function getVoteStats(q) {
@@ -706,7 +778,7 @@
         isLocked = false;
         const q = questions[currentQIndex];
         document.getElementById('live-progress').innerText = '第 ' + (currentQIndex + 1) + ' / ' + questions.length + ' 題（複選）';
-        document.getElementById('live-question').innerText = q.text;
+        document.getElementById('live-question').innerText = q.text || '（本題未輸入題目文字）';
         
         const badge = document.getElementById('live-phase-badge');
         badge.className = 'status-pill status-voting';
@@ -822,7 +894,7 @@
             qIndex: currentQIndex,
             round: q.round || 1,
             totalQ: questions.length,
-            text: q.text,
+            text: q.text || '（本題未輸入題目文字）',
             options: q.options,
             totalVoters: stats.totalVoters,
             optionCounts: stats.optionCounts,
@@ -890,11 +962,10 @@
         });
     }
 
-    // Chrome 分頁切回前景時自動檢查講師連線
+    // Chrome 分頁切回前景時自動檢查講師與學生連線
     document.addEventListener('visibilitychange', function() {
         if (document.visibilityState === 'visible') {
             if (hostIdParam) {
-                // 學生端回到前景立即檢查連線
                 if (!hostConnection || !hostConnection.open) {
                     manualStudentReconnect();
                 } else {
@@ -958,7 +1029,6 @@
                     scheduleStudentReconnect();
                 }
                 if (lastPongTime > 0 && Date.now() - lastPongTime > 16000) {
-                    // 超過 16 秒未收到講師端回應，判定為靜默斷線並主動重連
                     scheduleStudentReconnect();
                 }
             } else {
@@ -1013,7 +1083,6 @@
         const conn = peer.connect(targetHostIdGlobal, { reliable: true });
         hostConnection = conn;
 
-        // 連線逾時保護：若 6 秒內未完成 WebRTC 握手則自動重試
         const connectTimeout = setTimeout(function() {
             if (!conn.open) {
                 try { conn.close(); } catch (e) {}
@@ -1027,7 +1096,6 @@
             lastPongTime = Date.now();
             setStudentConnUI('connected', '🟢 已連線至課堂');
 
-            // 傳送 HELLO 註冊穩定 studentUuid，讓講師端同步題目與既有作答
             conn.send({
                 type: 'HELLO',
                 studentUuid: getOrCreateStudentUuid()
@@ -1070,7 +1138,6 @@
                     studentVoteSeq = 0;
                     studentChoices = Array.isArray(latestState.yourChoices) ? latestState.yourChoices.slice() : [];
                 } else if (Array.isArray(latestState.yourChoices)) {
-                    // 斷線重連後若伺服器已有作答紀錄，自動同步恢復
                     studentChoices = latestState.yourChoices.slice();
                 }
                 renderStudentUI();
@@ -1099,7 +1166,6 @@
     function scheduleStudentReconnect() {
         if (studentReconnectTimer) return;
         studentReconnectAttempts++;
-        // 指數退避（1.5s ~ 上限 6s），避免多人同時斷線造成瞬時風暴
         const delay = Math.min(6000, 1200 + studentReconnectAttempts * 700);
         studentReconnectTimer = setTimeout(function() {
             studentReconnectTimer = null;
@@ -1140,7 +1206,6 @@
                 scheduleStudentReconnect();
             }
         } else {
-            // 若點擊當下恰好斷線，立即觸發重連，連上後自動補送當前選項
             manualStudentReconnect();
             setTimeout(function() {
                 if (hostConnection && hostConnection.open) {
