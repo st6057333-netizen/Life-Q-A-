@@ -181,12 +181,10 @@
         
         <div id="student-options"></div>
 
-        <!-- 學生個人重新填答按鈕 -->
         <div id="student-clear-wrap" class="hidden" style="margin-top: 4px; margin-bottom: 12px;">
             <button class="btn btn-outline btn-sm" style="width: 100%; padding: 10px;" onclick="clearStudentChoices()">🔄 清除已選，重新填答本題</button>
         </div>
         
-        <!-- 學生選完後即時顯示投票結果 -->
         <div id="student-results" class="student-result-box hidden">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
                 <span style="font-weight: bold; color: #0f172a;">📊 即時選項勾選率</span>
@@ -209,7 +207,6 @@
     let hostConnection = null;
     let studentChoices = [];
 
-    // 預設產生 10 題範本
     function initDefaultQuestions() {
         questions = Array.from({ length: 10 }, (_, i) => ({
             text: `第 ${i + 1} 題（複選）：請在此輸入題目內容？`,
@@ -220,7 +217,6 @@
         renderSetupList();
     }
 
-    // 渲染講師設定畫面的題庫列表
     function renderSetupList() {
         const container = document.getElementById('questions-list');
         container.innerHTML = '';
@@ -302,7 +298,6 @@
         }
     }
 
-    // 判斷啟動模式（講師端 vs 學生端）
     const urlParams = new URLSearchParams(window.location.search);
     const hostId = urlParams.get('host');
     if (hostId) {
@@ -445,7 +440,6 @@
         }
     }
 
-    // 講師端：單題重新填答
     function resetCurrentVotes() {
         if (!confirm('確定要清空本題所有學生的作答紀錄，並讓全班重新填答這一題嗎？')) return;
         const q = questions[currentQIndex];
@@ -455,7 +449,6 @@
         loadQuestion(currentQIndex);
     }
 
-    // 講師端：全部題目重新作答
     function resetAllQuestions() {
         if (!confirm('確定要清空「全部題目」的作答紀錄，並從第 1 題重新開始嗎？')) return;
         questions.forEach(q => {
@@ -581,7 +574,6 @@
         });
     }
 
-    // 學生端：一鍵清除目前勾選並重新填答本題
     function clearStudentChoices() {
         if (!latestState || latestState.isLocked) return;
         studentChoices = [];
@@ -641,7 +633,6 @@
             optionsContainer.appendChild(btn);
         });
 
-        // 顯示或隱藏學生的「重新填答本題」按鈕
         const clearWrap = document.getElementById('student-clear-wrap');
         if (!latestState.isLocked && studentChoices.length > 0) {
             clearWrap.classList.remove('hidden');
