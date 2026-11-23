@@ -202,6 +202,11 @@
         
         <div id="student-options"></div>
 
+        <!-- 若已連線但尚未收到題目，提供立即向講師同步題目按鈕 -->
+        <div id="student-sync-wrap" class="hidden" style="margin-bottom: 12px;">
+            <button class="btn btn-outline btn-sm" style="width: 100%; padding: 10px;" onclick="requestStateFromHost()">🔄 重新向講師同步題目</button>
+        </div>
+
         <!-- 學生個人重新填答按鈕 -->
         <div id="student-clear-wrap" class="hidden" style="margin-top: 4px; margin-bottom: 12px;">
             <button class="btn btn-outline btn-sm" style="width: 100%; padding: 10px;" onclick="clearStudentChoices()">🔄 清除已選，重新填答本題</button>
@@ -233,7 +238,6 @@
     const LETTERS = ['A', 'B', 'C', 'D'];
     const STORAGE_KEY_QUESTIONS = 'classroom_quiz_saved_questions_v1';
 
-    // 強化 Chrome / 跨網路 WebRTC STUN 設定，提升連線成功率與穿透力
     const PEER_CONFIG = {
         debug: 1,
         pingInterval: 5000,
@@ -255,7 +259,6 @@
     let isLocked = false;
     let currentJoinUrl = '';
 
-    // 講師端連線狀態管理（以穩定 studentUuid 追蹤學生，避免重連重複計數）
     let peer = null;
     let hostPeerId = null;
     let hostReconnectTimer = null;
@@ -263,19 +266,18 @@
     let broadcastThrottleTimer = null;
     let pendingBroadcastFull = false;
     let pendingBroadcastVotes = false;
-    const connectedStudents = new Map(); // studentUuid -> { conn, lastSeen }
+    const connectedStudents = new Map();
 
-    // 學生端連線狀態管理
     let hostConnection = null;
     let targetHostIdGlobal = null;
     let studentChoices = [];
-    let studentVoteSeq = 0; // 單調遞增序號，確保重新填答與送出順序不衝突
+    let studentVoteSeq = 0;
     let studentReconnectTimer = null;
     let studentReconnectAttempts = 0;
     let studentHeartbeatTimer = null;
+    let studentSyncRetryTimer = null;
     let lastPongTime = 0;
 
-    // 產生或取得該瀏覽器分頁穩定的學生識別碼（斷線重連不重複計數）
     function getOrCreateStudentUuid() {
         let uid = sessionStorage.getItem('quiz_student_uuid');
         if (!uid) {
@@ -285,7 +287,6 @@
         return uid;
     }
 
-    // 將講師題庫與選項持久化儲存至 localStorage（重新整理不會消失）
     function saveQuestionsToStorage() {
         try {
             const serializable = questions.map(function(q) {
@@ -300,7 +301,6 @@
         }
     }
 
-    // 從 localStorage 載入已儲存的題庫
     function loadQuestionsFromStorage() {
         try {
             const raw = localStorage.getItem(STORAGE_KEY_QUESTIONS);
@@ -324,7 +324,6 @@
         }
     }
 
-    // 初始化題庫：優先讀取本機已儲存題目，若無則建立預設 10 題範本
     function initDefaultQuestions() {
         const saved = loadQuestionsFromStorage();
         if (saved && saved.length > 0) {
@@ -344,7 +343,6 @@
         renderSetupList();
     }
 
-    // 按下清除鍵才清除所有題目與選項
     function clearAllQuestionsAndOptions() {
         if (!confirm('確定要清除目前所有題目與選項內容嗎？（清除後將重置為空白題庫）')) return;
         localStorage.removeItem(STORAGE_KEY_QUESTIONS);
@@ -362,7 +360,6 @@
         renderSetupList();
     }
 
-    // 渲染講師設定畫面的題庫列表
     function renderSetupList() {
         const container = document.getElementById('questions-list');
         container.innerHTML = '';
@@ -461,7 +458,6 @@
         }
     }
 
-    // 判斷啟動模式（講師端 vs 學生端）
     const urlParams = new URLSearchParams(window.location.search);
     const hostIdParam = urlParams.get('host');
     if (hostIdParam) {
@@ -527,6 +523,11 @@
     }
 
     function initHostPeer() {
+        if (window.location.protocol === 'file:') {
+            setHostStatus('offline', '🔴 目前為本機檔案模式，學生無法連線');
+            alert('提醒：目前網址為 file:// 本機模式，手機掃描 QR Code 無法連線。請透過 HTTP/HTTPS 伺服器（例如 GitHub Pages 或 Live Server）開啟本頁。');
+        }
+
         if (peer && !peer.destroyed) {
             if (peer.disconnected) {
                 setHostStatus('reconnecting', '🟡 正在重新連線至伺服器...');
@@ -535,7 +536,6 @@
             return;
         }
 
-        // 嘗試沿用同分頁曾使用的 hostPeerId，減少意外重建時 QR Code 變動
         const savedHostId = sessionStorage.getItem('quiz_host_peer_id');
         peer = savedHostId ? new Peer(savedHostId, PEER_CONFIG) : new Peer(PEER_CONFIG);
 
@@ -572,7 +572,6 @@
             }
         });
 
-        // 啟動講師端心跳偵測，清理已斷線的殭屍連線
         if (hostHeartbeatTimer) clearInterval(hostHeartbeatTimer);
         hostHeartbeatTimer = setInterval(function() {
             const now = Date.now();
@@ -617,6 +616,7 @@
         let boundStudentUuid = null;
 
         conn.on('open', function() {
+            // 通道開啟時立即送出一次題目狀態，並於收到 HELLO / REQUEST_STATE 時再次精準補送
             sendStateToStudent(conn, null);
         });
 
@@ -624,7 +624,7 @@
             if (!msg || typeof msg !== 'object') return;
             const now = Date.now();
 
-            if (msg.type === 'HELLO' || msg.type === 'PING') {
+            if (msg.type === 'HELLO' || msg.type === 'REQUEST_STATE' || msg.type === 'PING') {
                 const uid = msg.studentUuid || conn.peer;
                 boundStudentUuid = uid;
 
@@ -636,7 +636,7 @@
                 updateOnlineCount();
                 renderHostChart();
 
-                if (msg.type === 'HELLO') {
+                if (msg.type === 'HELLO' || msg.type === 'REQUEST_STATE') {
                     const q = questions[currentQIndex];
                     const existingChoices = q.studentVotes[uid] || [];
                     sendStateToStudent(conn, existingChoices);
@@ -914,7 +914,6 @@
         }
     }
 
-    // 多人高併發節流廣播：合併 120ms 內的多次投票更新，避免 WebRTC 阻塞
     function scheduleThrottledBroadcast(isFull) {
         if (isFull) pendingBroadcastFull = true;
         else pendingBroadcastVotes = true;
@@ -962,18 +961,13 @@
         });
     }
 
-    // Chrome 分頁切回前景時自動檢查講師與學生連線
     document.addEventListener('visibilitychange', function() {
         if (document.visibilityState === 'visible') {
             if (hostIdParam) {
                 if (!hostConnection || !hostConnection.open) {
                     manualStudentReconnect();
                 } else {
-                    try {
-                        hostConnection.send({ type: 'HELLO', studentUuid: getOrCreateStudentUuid() });
-                    } catch (e) {
-                        manualStudentReconnect();
-                    }
+                    requestStateFromHost();
                 }
             } else if (peer && !document.getElementById('host-live').classList.contains('hidden')) {
                 if (peer.disconnected) {
@@ -1008,14 +1002,35 @@
         }
     }
 
+    function requestStateFromHost() {
+        if (hostConnection && hostConnection.open) {
+            try {
+                hostConnection.send({
+                    type: 'REQUEST_STATE',
+                    studentUuid: getOrCreateStudentUuid()
+                });
+            } catch (e) {
+                scheduleStudentReconnect();
+            }
+        }
+    }
+
     function initStudentMode(targetHostId) {
         targetHostIdGlobal = targetHostId;
         document.getElementById('host-setup').classList.add('hidden');
         document.getElementById('student-view').classList.remove('hidden');
 
+        // 若已連線但 3 秒內仍未收到題目，顯示手動同步按鈕並自動重試一次
+        if (studentSyncRetryTimer) clearTimeout(studentSyncRetryTimer);
+        studentSyncRetryTimer = setTimeout(function() {
+            if (!latestState) {
+                document.getElementById('student-sync-wrap').classList.remove('hidden');
+                requestStateFromHost();
+            }
+        }, 3000);
+
         connectStudentPeer();
 
-        // 學生端心跳保活與斷線偵測（每 5 秒檢查一次）
         if (studentHeartbeatTimer) clearInterval(studentHeartbeatTimer);
         studentHeartbeatTimer = setInterval(function() {
             if (hostConnection && hostConnection.open) {
@@ -1025,6 +1040,9 @@
                         studentUuid: getOrCreateStudentUuid(),
                         ts: Date.now()
                     });
+                    if (!latestState) {
+                        requestStateFromHost();
+                    }
                 } catch (e) {
                     scheduleStudentReconnect();
                 }
@@ -1055,7 +1073,12 @@
             });
             peer.on('error', function(err) {
                 console.warn('[Student Peer Error]', err.type, err);
-                setStudentConnUI('offline', '🔴 連線異常，重連中...');
+                if (err.type === 'peer-unavailable') {
+                    setStudentConnUI('offline', '🔴 找不到講師房間（請確認講師已開始互動）');
+                    document.getElementById('student-question').innerText = '找不到講師房間，請確認講師端已點擊「開始上課互動」且未關閉分頁。';
+                } else {
+                    setStudentConnUI('offline', '🔴 連線異常，重連中...');
+                }
                 scheduleStudentReconnect();
             });
         } else if (peer.disconnected) {
@@ -1100,6 +1123,9 @@
                 type: 'HELLO',
                 studentUuid: getOrCreateStudentUuid()
             });
+            setTimeout(function() {
+                if (!latestState) requestStateFromHost();
+            }, 400);
         });
 
         conn.on('data', function(msg) {
@@ -1129,6 +1155,7 @@
 
             if (msg.type === 'SYNC_STATE') {
                 latestState = msg.data;
+                document.getElementById('student-sync-wrap').classList.add('hidden');
                 const incomingRound = latestState.round || 1;
                 const isNewQuestionOrRound = (studentCurrentQIndex !== latestState.qIndex || studentCurrentRound !== incomingRound);
 
