@@ -111,9 +111,9 @@
             <h3>📋 快速批次匯入（每題一行，格式：題目 | 選項A | 選項B | 選項C | 選項D）</h3>
             <p style="font-size: 14px; color: #475569; margin-top: 0;">
                 範例 1：<code>你平時最常使用哪些交通工具通勤？ | 捷運 | 公車 | 機車 | 自行車</code><br>
-                範例 2：<code>本次課程你對哪幾個主題最感興趣？ | 基礎概念 | 實作演練 | 案例分析 | 進階應用</code>
+                範例 2（相容舊格式，會自動忽略第6欄正解）：<code>題目內容 | 選項A | 選項B | 選項C | 選項D | AC</code>
             </p>
-            <textarea id="batch-textarea" rows="6" placeholder="請貼上題目與四個選項，每行一題..."></textarea>
+            <textarea id="batch-textarea" rows="6" placeholder="請貼上題目與四個選項，每行一題（支援全形｜或半形|分隔）..."></textarea>
             <div style="margin-top: 10px; display: flex; gap: 10px;">
                 <button class="btn btn-sm" onclick="applyBatchImport()">✅ 套用至下方題庫</button>
                 <button class="btn btn-sm btn-secondary" onclick="toggleBatchImport()">取消</button>
@@ -181,12 +181,10 @@
         
         <div id="student-options"></div>
 
-        <!-- 學生個人重新填答按鈕 -->
         <div id="student-clear-wrap" class="hidden" style="margin-top: 4px; margin-bottom: 12px;">
             <button class="btn btn-outline btn-sm" style="width: 100%; padding: 10px;" onclick="clearStudentChoices()">🔄 清除已選，重新填答本題</button>
         </div>
         
-        <!-- 學生選完後即時顯示投票結果 -->
         <div id="student-results" class="student-result-box hidden">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
                 <span style="font-weight: bold; color: #0f172a;">📊 即時選項勾選率</span>
@@ -199,71 +197,66 @@
 </div>
 
 <script>
-    const LETTERS = new Array('A', 'B', 'C', 'D');
-    let questions = new Array();
+    const LETTERS = ['A', 'B', 'C', 'D'];
+    let questions = [];
     let currentQIndex = 0;
     let isLocked = false;
     
     let peer = null;
-    let studentConnections = new Array();
+    let studentConnections = [];
     let hostConnection = null;
-    let studentChoices = new Array();
+    let studentChoices = [];
 
-    // 預設產生 10 題範本
     function initDefaultQuestions() {
-        questions = Array.from({ length: 10 }, function(_, i) {
-            return {
-                text: '第 ' + (i + 1) + ' 題（複選）：請在此輸入題目內容？',
-                options: new Array('選項 A 內容', '選項 B 內容', '選項 C 內容', '選項 D 內容'),
-                studentVotes: {},
-                round: 1
-            };
-        });
+        questions = Array.from({ length: 10 }, (_, i) => ({
+            text: `第 ${i + 1} 題（複選）：請在此輸入題目內容？`,
+            options: ['選項 A 內容', '選項 B 內容', '選項 C 內容', '選項 D 內容'],
+            studentVotes: {},
+            round: 1
+        }));
         renderSetupList();
     }
 
-    // 渲染講師設定畫面的題庫列表
     function renderSetupList() {
         const container = document.getElementById('questions-list');
         container.innerHTML = '';
-        questions.forEach(function(q, qIdx) {
+        questions.forEach((q, qIdx) => {
             const card = document.createElement('div');
             card.className = 'question-card';
             
             let optionsHtml = '';
-            LETTERS.forEach(function(letter, optIdx) {
-                optionsHtml +=
-                    '<div class="option-row">' +
-                        '<span class="option-letter">' + letter + '.</span>' +
-                        '<input type="text" value="' + escapeHtml(q.options.at(optIdx)) + '" oninput="updateOption(' + qIdx + ', ' + optIdx + ', this.value)" placeholder="輸入選項 ' + letter + '">' +
-                    '</div>';
+            LETTERS.forEach((letter, optIdx) => {
+                optionsHtml += `
+                    <div class="option-row">
+                        <span class="option-letter">${letter}.</span>
+                        <input type="text" value="${escapeHtml(q.options[optIdx])}" oninput="updateOption(${qIdx}, ${optIdx}, this.value)" placeholder="輸入選項 ${letter}">
+                    </div>
+                `;
             });
-            const deleteBtnHtml = questions.length > 1
-                ? '<button class="btn btn-sm btn-danger" onclick="removeQuestion(' + qIdx + ')">刪除</button>'
-                : '';
-            card.innerHTML =
-                '<div class="question-card-header">' +
-                    '<span class="q-badge">第 ' + (qIdx + 1) + ' 題（複選）</span>' +
-                    deleteBtnHtml +
-                '</div>' +
-                '<input type="text" value="' + escapeHtml(q.text) + '" oninput="updateQuestionText(' + qIdx + ', this.value)" placeholder="請輸入第 ' + (qIdx + 1) + ' 題題目...">' +
-                '<div class="options-grid">' + optionsHtml + '</div>';
+            card.innerHTML = `
+                <div class="question-card-header">
+                    <span class="q-badge">第 ${qIdx + 1} 題（複選）</span>
+                    ${questions.length > 1 ? `<button class="btn btn-sm btn-danger" onclick="removeQuestion(${qIdx})">刪除</button>` : ''}
+                </div>
+                <input type="text" value="${escapeHtml(q.text)}" oninput="updateQuestionText(${qIdx}, this.value)" placeholder="請輸入第 ${qIdx + 1} 題題目...">
+                <div class="options-grid">${optionsHtml}</div>
+            `;
             container.appendChild(card);
         });
     }
 
     function escapeHtml(str) {
-        return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+        return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
     }
 
-    function updateQuestionText(qIdx, val) { questions.at(qIdx).text = val; }
-    function updateOption(qIdx, optIdx, val) { questions.at(qIdx).options.splice(optIdx, 1, val); }
+    function updateQuestionText(qIdx, val) { questions[qIdx].text = val; }
+    function updateOption(qIdx, optIdx, val) { questions[qIdx].options[optIdx] = val; }
 
     function addQuestionCard() {
         const num = questions.length + 1;
         questions.push({
-            text: '第 ' + num + ' 題（複選）：請在此輸入題目內容？',
-            options: new Array('選項 A 內容', '選項 B 內容', '選項 C 內容', '選項 D 內容'),
+            text: `第 ${num} 題（複選）：請在此輸入題目內容？`,
+            options: ['選項 A 內容', '選項 B 內容', '選項 C 內容', '選項 D 內容'],
             studentVotes: {},
             round: 1
         });
@@ -281,15 +274,18 @@
 
     function applyBatchImport() {
         const raw = document.getElementById('batch-textarea').value.trim();
-        if (!raw) return;
-        const lines = raw.split('\n').filter(function(l) { return l.trim() !== ''; });
-        const parsed = new Array();
-        lines.forEach(function(line) {
-            const parts = line.split('|').map(function(p) { return p.trim(); });
+        if (!raw) {
+            alert('請先在輸入框貼上題目內容！');
+            return;
+        }
+        const lines = raw.split(/\r?\n/).filter(l => l.trim() !== '');
+        const parsed = [];
+        lines.forEach(line => {
+            const parts = line.split(/[|｜]/).map(p => p.trim());
             if (parts.length >= 5) {
                 parsed.push({
-                    text: parts.at(0),
-                    options: new Array(parts.at(1), parts.at(2), parts.at(3), parts.at(4)),
+                    text: parts[0],
+                    options: [parts[1], parts[2], parts[3], parts[4]],
                     studentVotes: {},
                     round: 1
                 });
@@ -299,13 +295,12 @@
             questions = parsed;
             renderSetupList();
             toggleBatchImport();
-            alert('成功匯入 ' + parsed.length + ' 道題目！');
+            alert(`成功匯入 ${parsed.length} 道題目！`);
         } else {
-            alert('格式無法辨識，請確認每行皆包含「題目 | 選項A | 選項B | 選項C | 選項D」');
+            alert('格式無法辨識，請確認每行皆包含 5 個欄位：「題目 | 選項A | 選項B | 選項C | 選項D」');
         }
     }
 
-    // 判斷啟動模式（講師端 vs 學生端）
     const urlParams = new URLSearchParams(window.location.search);
     const hostId = urlParams.get('host');
     if (hostId) {
@@ -314,7 +309,6 @@
         initDefaultQuestions();
     }
 
-    // ================= 講師端邏輯 =================
     function startSession() {
         if (questions.length === 0) {
             alert('請至少建立一題！');
@@ -325,35 +319,35 @@
 
         if (!peer) {
             peer = new Peer();
-            peer.on('open', function(id) {
-                const joinUrl = window.location.origin + window.location.pathname + '?host=' + id;
+            peer.on('open', (id) => {
+                const joinUrl = `${window.location.origin}${window.location.pathname}?host=${id}`;
                 document.getElementById('share-url').innerText = joinUrl;
                 document.getElementById('qrcode').innerHTML = '';
                 new QRCode(document.getElementById('qrcode'), { text: joinUrl, width: 170, height: 170 });
                 loadQuestion(currentQIndex);
             });
-            peer.on('connection', function(conn) {
+            peer.on('connection', (conn) => {
                 studentConnections.push(conn);
                 updateOnlineCount();
                 renderHostChart();
-                conn.on('open', function() {
+                conn.on('open', () => {
                     sendStateToStudent(conn);
                 });
-                conn.on('data', function(msg) {
+                conn.on('data', (msg) => {
                     if (msg.type === 'VOTE_MULTI' && msg.qIndex === currentQIndex && !isLocked) {
-                        const q = questions.at(currentQIndex);
-                        const choices = Array.isArray(msg.choices) ? msg.choices : new Array();
+                        const q = questions[currentQIndex];
+                        const choices = Array.isArray(msg.choices) ? msg.choices : [];
                         if (choices.length === 0) {
                             delete q.studentVotes[conn.peer];
                         } else {
-                            q.studentVotes[conn.peer] = Array.from(new Set(choices)).sort(function(a, b) { return a - b; });
+                            q.studentVotes[conn.peer] = [...new Set(choices)].sort((a, b) => a - b);
                         }
                         renderHostChart();
                         broadcastVotesUpdate();
                     }
                 });
-                conn.on('close', function() {
-                    studentConnections = studentConnections.filter(function(c) { return c !== conn; });
+                conn.on('close', () => {
+                    studentConnections = studentConnections.filter(c => c !== conn);
                     updateOnlineCount();
                     renderHostChart();
                 });
@@ -364,12 +358,12 @@
     }
 
     function getActiveStudentCount() {
-        return studentConnections.filter(function(c) { return c.open; }).length;
+        return studentConnections.filter(c => c.open).length;
     }
 
     function updateOnlineCount() {
         const active = getActiveStudentCount();
-        document.getElementById('online-count').innerText = '線上學生：' + active + ' 人';
+        document.getElementById('online-count').innerText = `線上學生：${active} 人`;
     }
 
     function backToSetup() {
@@ -380,22 +374,20 @@
     function getVoteStats(q) {
         const voters = Object.values(q.studentVotes);
         const totalVoters = voters.length;
-        const optionCounts = new Array(4).fill(0);
-        voters.forEach(function(choiceArr) {
-            choiceArr.forEach(function(idx) {
-                if (idx >= 0 && idx < 4) {
-                    optionCounts.splice(idx, 1, optionCounts.at(idx) + 1);
-                }
+        const optionCounts = [0, 0, 0, 0];
+        voters.forEach(choiceArr => {
+            choiceArr.forEach(idx => {
+                if (idx >= 0 && idx < 4) optionCounts[idx]++;
             });
         });
-        return { totalVoters: totalVoters, optionCounts: optionCounts };
+        return { totalVoters, optionCounts };
     }
 
     function loadQuestion(index) {
         currentQIndex = index;
         isLocked = false;
-        const q = questions.at(currentQIndex);
-        document.getElementById('live-progress').innerText = '第 ' + (currentQIndex + 1) + ' / ' + questions.length + ' 題（複選）';
+        const q = questions[currentQIndex];
+        document.getElementById('live-progress').innerText = `第 ${currentQIndex + 1} / ${questions.length} 題（複選）`;
         document.getElementById('live-question').innerText = q.text;
         
         const badge = document.getElementById('live-phase-badge');
@@ -417,20 +409,19 @@
 
     function lockVoting() {
         isLocked = true;
-        const q = questions.at(currentQIndex);
+        const q = questions[currentQIndex];
         
         const badge = document.getElementById('live-phase-badge');
         badge.className = 'status-pill status-locked';
         badge.innerText = '🔒 投票已結束（作答已鎖定）';
         document.getElementById('lock-btn').disabled = true;
 
-        const stats = getVoteStats(q);
-        const totalVoters = stats.totalVoters;
+        const { totalVoters } = getVoteStats(q);
         const activeStudents = getActiveStudentCount();
         const responseRate = activeStudents === 0 ? 0 : Math.min(100, Math.round((totalVoters / activeStudents) * 100));
 
         const banner = document.getElementById('summary-banner');
-        banner.innerHTML = '🔒 本題投票已截止｜總作答人數：' + totalVoters + ' 人（全班作答率：' + responseRate + '%）';
+        banner.innerHTML = `🔒 本題投票已截止｜總作答人數：${totalVoters} 人（全班作答率：${responseRate}%）`;
         banner.classList.remove('hidden');
 
         renderHostChart();
@@ -453,7 +444,7 @@
 
     function resetCurrentVotes() {
         if (!confirm('確定要清空本題所有學生的作答紀錄，並讓全班重新填答這一題嗎？')) return;
-        const q = questions.at(currentQIndex);
+        const q = questions[currentQIndex];
         q.studentVotes = {};
         q.round = (q.round || 1) + 1;
         isLocked = false;
@@ -462,7 +453,7 @@
 
     function resetAllQuestions() {
         if (!confirm('確定要清空「全部題目」的作答紀錄，並從第 1 題重新開始嗎？')) return;
-        questions.forEach(function(q) {
+        questions.forEach(q => {
             q.studentVotes = {};
             q.round = (q.round || 1) + 1;
         });
@@ -471,49 +462,48 @@
     }
 
     function renderHostChart() {
-        const q = questions.at(currentQIndex);
+        const q = questions[currentQIndex];
         const container = document.getElementById('chart-container');
         container.innerHTML = '';
         
-        const stats = getVoteStats(q);
-        const totalVoters = stats.totalVoters;
-        const optionCounts = stats.optionCounts;
+        const { totalVoters, optionCounts } = getVoteStats(q);
         const activeStudents = getActiveStudentCount();
         const responseRate = activeStudents === 0 ? 0 : Math.min(100, Math.round((totalVoters / activeStudents) * 100));
 
         document.getElementById('total-voters').innerText = totalVoters;
-        document.getElementById('response-rate-text').innerText = '全班作答率：' + responseRate + '% (' + totalVoters + '/' + activeStudents + ' 人)';
+        document.getElementById('response-rate-text').innerText = `全班作答率：${responseRate}% (${totalVoters}/${activeStudents} 人)`;
 
-        const colors = new Array('#2563eb', '#8b5cf6', '#f59e0b', '#06b6d4');
-        q.options.forEach(function(opt, idx) {
-            const count = optionCounts.at(idx);
+        const colors = ['#2563eb', '#8b5cf6', '#f59e0b', '#06b6d4'];
+        q.options.forEach((opt, idx) => {
+            const count = optionCounts[idx];
             const percent = totalVoters === 0 ? 0 : Math.round((count / totalVoters) * 100);
             
             const item = document.createElement('div');
             item.className = 'bar-item';
-            item.innerHTML =
-                '<div class="bar-header">' +
-                    '<span>(' + LETTERS.at(idx) + ') ' + escapeHtml(opt) + '</span>' +
-                    '<span>' + count + ' 人選 (' + percent + '%)</span>' +
-                '</div>' +
-                '<div class="bar-bg">' +
-                    '<div class="bar-fill" style="width: ' + percent + '%; background-color: ' + colors.at(idx) + ';"></div>' +
-                '</div>';
+            item.innerHTML = `
+                <div class="bar-header">
+                    <span>(${LETTERS[idx]}) ${escapeHtml(opt)}</span>
+                    <span>${count} 人選 (${percent}%)</span>
+                </div>
+                <div class="bar-bg">
+                    <div class="bar-fill" style="width: ${percent}%; background-color: ${colors[idx]};"></div>
+                </div>
+            `;
             container.appendChild(item);
         });
     }
 
     function getPayloadForStudent() {
-        const q = questions.at(currentQIndex);
-        const stats = getVoteStats(q);
+        const q = questions[currentQIndex];
+        const { totalVoters, optionCounts } = getVoteStats(q);
         return {
             qIndex: currentQIndex,
             round: q.round || 1,
             totalQ: questions.length,
             text: q.text,
             options: q.options,
-            totalVoters: stats.totalVoters,
-            optionCounts: stats.optionCounts,
+            totalVoters: totalVoters,
+            optionCounts: optionCounts,
             isLocked: isLocked
         };
     }
@@ -526,27 +516,26 @@
 
     function broadcastFullState() {
         const payload = getPayloadForStudent();
-        studentConnections.forEach(function(conn) {
+        studentConnections.forEach(conn => {
             if (conn.open) conn.send({ type: 'SYNC_STATE', data: payload });
         });
     }
 
     function broadcastVotesUpdate() {
-        const q = questions.at(currentQIndex);
-        const stats = getVoteStats(q);
-        studentConnections.forEach(function(conn) {
+        const q = questions[currentQIndex];
+        const { totalVoters, optionCounts } = getVoteStats(q);
+        studentConnections.forEach(conn => {
             if (conn.open) {
                 conn.send({
                     type: 'VOTES_UPDATE',
                     qIndex: currentQIndex,
-                    totalVoters: stats.totalVoters,
-                    optionCounts: stats.optionCounts
+                    totalVoters: totalVoters,
+                    optionCounts: optionCounts
                 });
             }
         });
     }
 
-    // ================= 學生端邏輯 =================
     let studentCurrentQIndex = -1;
     let studentCurrentRound = -1;
     let latestState = null;
@@ -555,20 +544,20 @@
         document.getElementById('host-setup').classList.add('hidden');
         document.getElementById('student-view').classList.remove('hidden');
         peer = new Peer();
-        peer.on('open', function() {
+        peer.on('open', () => {
             hostConnection = peer.connect(targetHostId);
             
-            hostConnection.on('open', function() {
+            hostConnection.on('open', () => {
                 document.getElementById('student-conn-status').innerText = '🟢 已連線至課堂';
             });
-            hostConnection.on('data', function(msg) {
+            hostConnection.on('data', (msg) => {
                 if (msg.type === 'SYNC_STATE') {
                     latestState = msg.data;
                     const incomingRound = latestState.round || 1;
                     if (studentCurrentQIndex !== latestState.qIndex || studentCurrentRound !== incomingRound) {
                         studentCurrentQIndex = latestState.qIndex;
                         studentCurrentRound = incomingRound;
-                        studentChoices = new Array();
+                        studentChoices = [];
                     }
                     renderStudentUI();
                 } else if (msg.type === 'VOTES_UPDATE' && latestState && msg.qIndex === latestState.qIndex) {
@@ -579,7 +568,7 @@
                     }
                 }
             });
-            hostConnection.on('close', function() {
+            hostConnection.on('close', () => {
                 document.getElementById('student-conn-status').innerText = '🔴 連線已中斷，請重新掃碼';
                 document.getElementById('student-conn-status').style.color = '#dc2626';
             });
@@ -588,12 +577,12 @@
 
     function clearStudentChoices() {
         if (!latestState || latestState.isLocked) return;
-        studentChoices = new Array();
+        studentChoices = [];
         if (hostConnection && hostConnection.open) {
             hostConnection.send({
                 type: 'VOTE_MULTI',
                 qIndex: latestState.qIndex,
-                choices: new Array()
+                choices: []
             });
         }
         renderStudentUI();
@@ -601,13 +590,13 @@
 
     function renderStudentUI() {
         if (!latestState) return;
-        document.getElementById('student-progress').innerText = '第 ' + (latestState.qIndex + 1) + ' / ' + latestState.totalQ + ' 題';
+        document.getElementById('student-progress').innerText = `第 ${latestState.qIndex + 1} / ${latestState.totalQ} 題`;
         document.getElementById('student-question').innerText = latestState.text;
 
         const optionsContainer = document.getElementById('student-options');
         optionsContainer.innerHTML = '';
 
-        latestState.options.forEach(function(opt, idx) {
+        latestState.options.forEach((opt, idx) => {
             const btn = document.createElement('button');
             btn.className = 'option-btn';
             const isSelected = studentChoices.includes(idx);
@@ -621,17 +610,18 @@
                 statusTag = '☑️ 已選';
             }
 
-            btn.innerHTML =
-                '<div><span>(' + LETTERS.at(idx) + ')</span> <span>' + escapeHtml(opt) + '</span></div>' +
-                '<span style="font-size: 14px; white-space: nowrap;">' + statusTag + '</span>';
-            btn.onclick = function() {
+            btn.innerHTML = `
+                <div><span>(${LETTERS[idx]})</span> <span>${escapeHtml(opt)}</span></div>
+                <span style="font-size: 14px; white-space: nowrap;">${statusTag}</span>
+            `;
+            btn.onclick = () => {
                 if (latestState.isLocked) return;
                 if (hostConnection && hostConnection.open) {
                     if (studentChoices.includes(idx)) {
-                        studentChoices = studentChoices.filter(function(i) { return i !== idx; });
+                        studentChoices = studentChoices.filter(i => i !== idx);
                     } else {
                         studentChoices.push(idx);
-                        studentChoices.sort(function(a, b) { return a - b; });
+                        studentChoices.sort((a, b) => a - b);
                     }
                     hostConnection.send({
                         type: 'VOTE_MULTI',
@@ -660,16 +650,16 @@
 
             if (latestState.isLocked) {
                 const myLetters = studentChoices.length > 0
-                    ? '您最終選擇了 ' + studentChoices.map(function(i) { return '(' + LETTERS.at(i) + ')'; }).join('、') + '。'
+                    ? `您最終選擇了 ${studentChoices.map(i => `(${LETTERS[i]})`).join('、')}。`
                     : '您本題未作答。';
                 banner.style.background = '#fef3c7';
                 banner.style.color = '#92400e';
-                banner.innerText = '🔒 本題投票已結束，' + myLetters + '請等待講師切換下一題。';
+                banner.innerText = `🔒 本題投票已結束，${myLetters}請等待講師切換下一題。`;
             } else {
-                const myLetters = studentChoices.map(function(i) { return '(' + LETTERS.at(i) + ')'; }).join('、');
+                const myLetters = studentChoices.map(i => `(${LETTERS[i]})`).join('、');
                 banner.style.background = '#dbeafe';
                 banner.style.color = '#1e40af';
-                banner.innerText = '✅ 您目前已選：' + myLetters + '。講師截止前皆可自由增減或點擊上方按鈕重新填答！';
+                banner.innerText = `✅ 您目前已選：${myLetters}。講師截止前皆可自由增減或點擊上方按鈕重新填答！`;
             }
         } else {
             resultsBox.classList.add('hidden');
@@ -679,23 +669,24 @@
     function renderStudentResultBars() {
         if (!latestState) return;
         const total = latestState.totalVoters;
-        document.getElementById('student-total-voters').innerText = '共 ' + total + ' 人作答';
+        document.getElementById('student-total-voters').innerText = `共 ${total} 人作答`;
         
         const barsContainer = document.getElementById('student-bars');
         barsContainer.innerHTML = '';
-        latestState.options.forEach(function(opt, idx) {
-            const count = latestState.optionCounts.at(idx);
+        latestState.options.forEach((opt, idx) => {
+            const count = latestState.optionCounts[idx];
             const percent = total === 0 ? 0 : Math.round((count / total) * 100);
             const div = document.createElement('div');
             div.className = 'mini-bar-item';
-            div.innerHTML =
-                '<div class="mini-bar-text">' +
-                    '<span>(' + LETTERS.at(idx) + ') ' + escapeHtml(opt) + '</span>' +
-                    '<span>' + count + ' 人選 (' + percent + '%)</span>' +
-                '</div>' +
-                '<div class="mini-bar-bg">' +
-                    '<div class="mini-bar-fill" style="width: ' + percent + '%;"></div>' +
-                '</div>';
+            div.innerHTML = `
+                <div class="mini-bar-text">
+                    <span>(${LETTERS[idx]}) ${escapeHtml(opt)}</span>
+                    <span>${count} 人選 (${percent}%)</span>
+                </div>
+                <div class="mini-bar-bg">
+                    <div class="mini-bar-fill" style="width: ${percent}%;"></div>
+                </div>
+            `;
             barsContainer.appendChild(div);
         });
     }
