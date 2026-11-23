@@ -171,10 +171,14 @@
     </div>
 
     <!-- 3. 學生手機投票與即時結果介面 -->
-    <div id="student-view" class="student-view hidden">
+     <div id="student-view" class="student-view hidden">
         <div class="student-header">
             <span class="progress-pill" style="font-size: 14px; padding: 6px 12px;" id="student-progress">連線中...</span>
-            <span style="font-size: 13px; font-weight: bold; color: #166534;" id="student-conn-status">🟢 已連線</span>
+            <span style="font-size: 13px; font-weight: bold; color: #d97706;" id="student-conn-status">🟡 連線建立中...</span>
+        </div>
+        <div id="student-reconnect-box" class="hidden" style="background: #fef2f2; border: 1px solid #fecaca; padding: 12px; border-radius: 10px; margin-bottom: 14px; text-align: center;">
+            <div id="student-reconnect-msg" style="color: #dc2626; font-size: 14px; font-weight: bold; margin-bottom: 8px;">連線逾時，正在嘗試重新連線...</div>
+            <button class="btn btn-sm btn-danger" onclick="manualReconnect()">🔄 立即重新連線</button>
         </div>
         <div class="multi-hint">☑️ 本題為複選題（可勾選 1 至 4 個選項）</div>
         <h2 id="student-question" style="font-size: 21px; margin-bottom: 18px; line-height: 1.4;">請稍候，等待講師開始題目...</h2>
@@ -317,14 +321,28 @@
         document.getElementById('host-setup').classList.add('hidden');
         document.getElementById('host-live').classList.remove('hidden');
 
+         const peerConfig = {
+            config: {
+                iceServers: [
+                    { urls: 'stun:://google.com' },
+                    { urls: 'stun:://google.com' },
+                    { urls: 'stun:://google.com' },
+                    { urls: 'stun:://twilio.com' }
+                ]
+            }
+        };
+
         if (!peer) {
-            peer = new Peer();
+            peer = new Peer(peerConfig);
             peer.on('open', (id) => {
                 const joinUrl = `${window.location.origin}${window.location.pathname}?host=${id}`;
                 document.getElementById('share-url').innerText = joinUrl;
                 document.getElementById('qrcode').innerHTML = '';
                 new QRCode(document.getElementById('qrcode'), { text: joinUrl, width: 170, height: 170 });
                 loadQuestion(currentQIndex);
+            });
+            peer.on('disconnected', () => {
+                if (peer && !peer.destroyed) peer.reconnect();
             });
             peer.on('connection', (conn) => {
                 studentConnections.push(conn);
@@ -334,6 +352,14 @@
                     sendStateToStudent(conn);
                 });
                 conn.on('data', (msg) => {
+                    if (msg.type === 'PING') {
+                        if (conn.open) conn.send({ type: 'PONG' });
+                        return;
+                    }
+                    if (msg.type === 'REQUEST_SYNC') {
+                        sendStateToStudent(conn);
+                        return;
+                    }
                     if (msg.type === 'VOTE_MULTI' && msg.qIndex === currentQIndex && !isLocked) {
                         const q = questions[currentQIndex];
                         const choices = Array.isArray(msg.choices) ? msg.choices : [];
@@ -355,7 +381,6 @@
         } else {
             loadQuestion(currentQIndex);
         }
-    }
 
     function getActiveStudentCount() {
         return studentConnections.filter(c => c.open).length;
@@ -539,19 +564,103 @@
     let studentCurrentQIndex = -1;
     let studentCurrentRound = -1;
     let latestState = null;
+    let savedHostId = null;
+    let connectTimeoutTimer = null;
+    let heartbeatTimer = null;
+    let retryCount = 0;
+
+    function setStudentStatus(text, color) {
+        const el = document.getElementById('student-conn-status');
+        el.innerText = text;
+        el.style.color = color;
+    }
+
+    function manualReconnect() {
+        retryCount = 0;
+        if (savedHostId) connectToHost(savedHostId);
+    }
 
     function initStudentMode(targetHostId) {
+        savedHostId = targetHostId;
         document.getElementById('host-setup').classList.add('hidden');
         document.getElementById('student-view').classList.remove('hidden');
-        peer = new Peer();
+
+        // 手機切換分頁或鎖屏喚醒時自動檢查並同步
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible' && savedHostId) {
+                if (hostConnection && hostConnection.open) {
+                    hostConnection.send({ type: 'REQUEST_SYNC' });
+                } else {
+                    connectToHost(savedHostId);
+                }
+            }
+        });
+
+        connectToHost(targetHostId);
+    }
+
+    function connectToHost(targetHostId) {
+        clearTimeout(connectTimeoutTimer);
+        clearInterval(heartbeatTimer);
+
+        setStudentStatus(retryCount > 0 ? `🟡 自動重連中 (${retryCount})...` : '🟡 連線建立中...', '#d97706');
+
+        if (hostConnection) {
+            try { hostConnection.close(); } catch (e) {}
+            hostConnection = null;
+        }
+        if (peer) {
+            try { peer.destroy(); } catch (e) {}
+            peer = null;
+        }
+
+        const peerConfig = {
+            config: {
+                iceServers: [
+                    { urls: 'stun:://google.com' },
+                    { urls: 'stun:://google.com' },
+                    { urls: 'stun:://google.com' },
+                    { urls: 'stun:://twilio.com' }
+                ]
+            }
+        };
+
+        // 超過 6 秒未收到題目資料即顯示提示並自動重連
+        connectTimeoutTimer = setTimeout(() => {
+            if (!hostConnection || !hostConnection.open || !latestState) {
+                retryCount++;
+                document.getElementById('student-reconnect-box').classList.remove('hidden');
+                document.getElementById('student-reconnect-msg').innerText = `連線逾時（第 ${retryCount} 次重試），若講師已重整網頁請重新掃描 QR Code。`;
+                connectToHost(targetHostId);
+            }
+        }, 6000);
+
+        peer = new Peer(peerConfig);
         peer.on('open', () => {
-            hostConnection = peer.connect(targetHostId);
-            
+            hostConnection = peer.connect(targetHostId, { reliable: true });
+
             hostConnection.on('open', () => {
-                document.getElementById('student-conn-status').innerText = '🟢 已連線至課堂';
+                clearTimeout(connectTimeoutTimer);
+                retryCount = 0;
+                document.getElementById('student-reconnect-box').classList.add('hidden');
+                setStudentStatus('🟢 已連線至課堂', '#166534');
+                hostConnection.send({ type: 'REQUEST_SYNC' });
+
+                // 每 15 秒發送心跳包防止連線閒置中斷
+                heartbeatTimer = setInterval(() => {
+                    if (hostConnection && hostConnection.open) {
+                        hostConnection.send({ type: 'PING' });
+                    }
+                }, 15000);
             });
+
             hostConnection.on('data', (msg) => {
+                if (msg.type === 'PONG') return;
                 if (msg.type === 'SYNC_STATE') {
+                    clearTimeout(connectTimeoutTimer);
+                    document.getElementById('student-reconnect-box').classList.add('hidden');
+                    setStudentStatus('🟢 已連線至課堂', '#166534');
+
                     latestState = msg.data;
                     const incomingRound = latestState.round || 1;
                     if (studentCurrentQIndex !== latestState.qIndex || studentCurrentRound !== incomingRound) {
@@ -568,10 +677,22 @@
                     }
                 }
             });
+
             hostConnection.on('close', () => {
-                document.getElementById('student-conn-status').innerText = '🔴 連線已中斷，請重新掃碼';
-                document.getElementById('student-conn-status').style.color = '#dc2626';
+                clearInterval(heartbeatTimer);
+                setStudentStatus('🔴 連線中斷，嘗試重連...', '#dc2626');
+                document.getElementById('student-reconnect-box').classList.remove('hidden');
+                document.getElementById('student-reconnect-msg').innerText = '與課堂連線中斷，正在嘗試自動重新連線...';
+                setTimeout(() => connectToHost(targetHostId), 3000);
             });
+
+            hostConnection.on('error', () => {
+                document.getElementById('student-reconnect-box').classList.remove('hidden');
+            });
+        });
+
+        peer.on('error', () => {
+            document.getElementById('student-reconnect-box').classList.remove('hidden');
         });
     }
 
