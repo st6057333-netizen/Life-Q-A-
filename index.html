@@ -76,7 +76,7 @@
 
         /* 長條圖樣式 */
         .bar-item { margin-bottom: 18px; }
-        .bar-header { display: flex; justify-content: space-between; font-weight: bold; margin-bottom: 6px; font-size: 18px; }
+        .bar-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; font-weight: bold; margin-bottom: 6px; font-size: 18px; word-break: break-word; }
         .bar-bg { width: 100%; height: 42px; background: #e2e8f0; border-radius: 10px; overflow: hidden; }
         .bar-fill { height: 100%; background: var(--primary); width: 0%; transition: width 0.35s cubic-bezier(0.4, 0, 0.2, 1); }
         
@@ -87,7 +87,7 @@
         .student-view { max-width: 520px; margin: 0 auto; }
         .student-header { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 15px; flex-wrap: wrap; }
         .multi-hint { display: inline-block; background: #e0e7ff; color: #3730a3; font-size: 13px; font-weight: bold; padding: 4px 10px; border-radius: 6px; margin-bottom: 10px; }
-        .option-btn { width: 100%; padding: 16px; margin-bottom: 12px; font-size: 17px; font-weight: bold; background: white; border: 2px solid var(--border); border-radius: 12px; cursor: pointer; text-align: left; transition: 0.15s; display: flex; align-items: center; justify-content: space-between; gap: 12px; touch-action: manipulation; }
+        .option-btn { width: 100%; padding: 16px; margin-bottom: 12px; font-size: 17px; font-weight: bold; background: white; border: 2px solid var(--border); border-radius: 12px; cursor: pointer; text-align: left; transition: 0.15s; display: flex; align-items: center; justify-content: space-between; gap: 12px; touch-action: manipulation; word-break: break-word; }
         .option-btn:hover:not(:disabled) { border-color: var(--primary); background: #eff6ff; }
         .option-btn.selected { background: var(--primary); color: white; border-color: var(--primary); }
         .option-btn:disabled { cursor: default; opacity: 0.9; }
@@ -95,7 +95,7 @@
         /* 學生端即時結果條 */
         .student-result-box { background: #f8fafc; border: 2px solid #e2e8f0; border-radius: 12px; padding: 16px; margin-top: 20px; }
         .mini-bar-item { margin-bottom: 10px; }
-        .mini-bar-text { display: flex; justify-content: space-between; font-size: 14px; font-weight: bold; margin-bottom: 4px; }
+        .mini-bar-text { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; font-size: 14px; font-weight: bold; margin-bottom: 4px; word-break: break-word; }
         .mini-bar-bg { width: 100%; height: 14px; background: #e2e8f0; border-radius: 6px; overflow: hidden; }
         .mini-bar-fill { height: 100%; background: var(--primary); transition: width 0.3s; }
         .wait-banner { background: #fef3c7; color: #92400e; padding: 12px; border-radius: 8px; font-weight: bold; text-align: center; margin-top: 16px; line-height: 1.5; }
@@ -109,7 +109,7 @@
         <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 15px;">
             <div>
                 <h1>📝 課堂多題即時互動統計設定（複選題版）</h1>
-                <p style="color: #64748b; margin: 0;">每題皆為複選題，即時統計全班作答率與各選項勾選比例（不設正解）。題目自動儲存於本機，重新整理不會消失。</p>
+                <p style="color: #64748b; margin: 0;">每題皆為複選題，即時統計全班作答率與各選項勾選比例（不設正解）。建議題目與選項保持簡潔，確保連線與作答同步順暢。</p>
             </div>
             <div style="display: flex; gap: 10px; flex-wrap: wrap;">
                 <button class="btn btn-danger" onclick="clearAllQuestionsAndOptions()">🗑️ 清除題目選項</button>
@@ -154,7 +154,7 @@
                 <button class="btn btn-sm btn-secondary" onclick="backToSetup()">⚙️ 返回編輯題庫</button>
             </div>
         </div>
-        <h1 id="live-question" style="font-size: 28px; margin-bottom: 25px; line-height: 1.4;">題目載入中...</h1>
+        <h1 id="live-question" style="font-size: 28px; margin-bottom: 25px; line-height: 1.4; word-break: break-word;">題目載入中...</h1>
         <div class="dashboard">
             <div class="qr-panel">
                 <div style="font-weight: bold; font-size: 16px;">📱 學生掃碼加入課堂</div>
@@ -198,7 +198,7 @@
             <span class="conn-badge" id="student-conn-status">🟡 連線建立中...</span>
         </div>
         <div class="multi-hint">☑️ 本題為複選題（可勾選 1 至 4 個選項）</div>
-        <h2 id="student-question" style="font-size: 21px; margin-bottom: 18px; line-height: 1.4;">請稍候，正在連線至講師課堂...</h2>
+        <h2 id="student-question" style="font-size: 21px; margin-bottom: 18px; line-height: 1.4; word-break: break-word;">請稍候，正在連線至講師課堂...</h2>
         
         <div id="student-options"></div>
 
@@ -237,6 +237,8 @@
 <script>
     const LETTERS = ['A', 'B', 'C', 'D'];
     const STORAGE_KEY_QUESTIONS = 'classroom_quiz_saved_questions_v1';
+    const MAX_QUESTION_CHARS = 180;
+    const MAX_OPTION_CHARS = 80;
 
     const PEER_CONFIG = {
         debug: 1,
@@ -277,6 +279,13 @@
     let studentHeartbeatTimer = null;
     let studentSyncRetryTimer = null;
     let lastPongTime = 0;
+
+    // 清理多餘換行與超長字元，避免 WebRTC 單筆封包過大導致連線或傳送失敗
+    function sanitizePacketText(str, maxLen) {
+        const cleaned = String(str || '').replace(/\r?\n+/g, ' ').trim();
+        if (cleaned.length <= maxLen) return cleaned;
+        return cleaned.slice(0, maxLen) + '…';
+    }
 
     function getOrCreateStudentUuid() {
         let uid = sessionStorage.getItem('quiz_student_uuid');
@@ -616,7 +625,6 @@
         let boundStudentUuid = null;
 
         conn.on('open', function() {
-            // 通道開啟時立即送出一次題目狀態，並於收到 HELLO / REQUEST_STATE 時再次精準補送
             sendStateToStudent(conn, null);
         });
 
@@ -878,7 +886,7 @@
             item.innerHTML =
                 '<div class="bar-header">' +
                     '<span>(' + LETTERS[idx] + ') ' + escapeHtml(opt) + '</span>' +
-                    '<span>' + count + ' 人選 (' + percent + '%)</span>' +
+                    '<span style="white-space: nowrap;">' + count + ' 人選 (' + percent + '%)</span>' +
                 '</div>' +
                 '<div class="bar-bg">' +
                     '<div class="bar-fill" style="width: ' + percent + '%; background-color: ' + colors[idx] + ';"></div>' +
@@ -894,8 +902,10 @@
             qIndex: currentQIndex,
             round: q.round || 1,
             totalQ: questions.length,
-            text: q.text || '（本題未輸入題目文字）',
-            options: q.options,
+            text: sanitizePacketText(q.text || '（本題未輸入題目文字）', MAX_QUESTION_CHARS),
+            options: q.options.map(function(opt) {
+                return sanitizePacketText(opt, MAX_OPTION_CHARS);
+            }),
             totalVoters: stats.totalVoters,
             optionCounts: stats.optionCounts,
             isLocked: isLocked
@@ -910,10 +920,13 @@
         if (conn && conn.open) {
             try {
                 conn.send({ type: 'SYNC_STATE', data: getPayloadForStudent(yourChoices) });
-            } catch (e) {}
+            } catch (e) {
+                console.warn('[Send State Error]', e);
+            }
         }
     }
 
+    // 放寬為 250ms 節流合併，避免字數較多或多人同時作答時通道壅塞
     function scheduleThrottledBroadcast(isFull) {
         if (isFull) pendingBroadcastFull = true;
         else pendingBroadcastVotes = true;
@@ -929,7 +942,7 @@
                 pendingBroadcastVotes = false;
                 broadcastVotesUpdate();
             }
-        }, 120);
+        }, 250);
     }
 
     function broadcastFullState() {
@@ -942,6 +955,7 @@
         });
     }
 
+    // 後續投票更新僅傳送精簡統計數字，不重複夾帶長題目與長選項文字
     function broadcastVotesUpdate() {
         const q = questions[currentQIndex];
         const stats = getVoteStats(q);
@@ -1020,7 +1034,6 @@
         document.getElementById('host-setup').classList.add('hidden');
         document.getElementById('student-view').classList.remove('hidden');
 
-        // 若已連線但 3 秒內仍未收到題目，顯示手動同步按鈕並自動重試一次
         if (studentSyncRetryTimer) clearTimeout(studentSyncRetryTimer);
         studentSyncRetryTimer = setTimeout(function() {
             if (!latestState) {
@@ -1335,7 +1348,7 @@
             div.innerHTML =
                 '<div class="mini-bar-text">' +
                     '<span>(' + LETTERS[idx] + ') ' + escapeHtml(opt) + '</span>' +
-                    '<span>' + count + ' 人選 (' + percent + '%)</span>' +
+                    '<span style="white-space: nowrap;">' + count + ' 人選 (' + percent + '%)</span>' +
                 '</div>' +
                 '<div class="mini-bar-bg">' +
                     '<div class="mini-bar-fill" style="width: ' + percent + '%;"></div>' +
