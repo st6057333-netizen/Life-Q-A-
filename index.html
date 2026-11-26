@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>課堂多題即時互動調查系統（複選＋答題率統計版）</title>
-    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+    <title>課堂多題即時互動調查系統（MQTT WebSocket 穩定版）</title>
+    <script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <style>
         :root {
@@ -108,8 +108,8 @@
     <div id="host-setup">
         <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 15px;">
             <div>
-                <h1>📝 課堂多題即時互動統計設定（複選題版）</h1>
-                <p style="color: #64748b; margin: 0;">每題皆為複選題，即時統計全班作答率與各選項勾選比例（不設正解）。建議題目與選項保持簡潔，確保連線與作答同步順暢。</p>
+                <h1>📝 課堂多題即時互動統計設定（MQTT 穩定版）</h1>
+                <p style="color: #64748b; margin: 0;">採用 MQTT WebSocket 雲端訊息通道，支援 Chrome 與行動網路穩定同步。題目自動儲存於本機。</p>
             </div>
             <div style="display: flex; gap: 10px; flex-wrap: wrap;">
                 <button class="btn btn-danger" onclick="clearAllQuestionsAndOptions()">🗑️ 清除題目選項</button>
@@ -146,7 +146,7 @@
             <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
                 <span class="progress-pill" id="live-progress">第 1 / 10 題</span>
                 <span class="status-pill status-voting" id="live-phase-badge">🟢 開放複選作答中</span>
-                <span class="conn-badge" id="host-server-status">🟢 連線服務就緒</span>
+                <span class="conn-badge" id="host-server-status">🟡 連線 MQTT 伺服器中...</span>
                 <span style="font-size: 14px; font-weight: bold; color: #475569;" id="online-count">線上學生：0 人</span>
             </div>
             <div style="display: flex; gap: 8px; flex-wrap: wrap;">
@@ -190,7 +190,7 @@
     <!-- 3. 學生手機投票與即時結果介面 -->
     <div id="student-view" class="student-view hidden">
         <div id="student-reconnect-bar" class="reconnect-bar hidden">
-            <span id="student-reconnect-msg">⚠️ 與講師端連線中斷，正在自動重連...</span>
+            <span id="student-reconnect-msg">⚠️ 與伺服器連線暫時中斷，正在自動重連...</span>
             <button class="btn btn-sm btn-danger" onclick="manualStudentReconnect()">立即重連</button>
         </div>
         <div class="student-header">
@@ -204,7 +204,7 @@
 
         <!-- 若已連線但尚未收到題目，提供立即向講師同步題目按鈕 -->
         <div id="student-sync-wrap" class="hidden" style="margin-bottom: 12px;">
-            <button class="btn btn-outline btn-sm" style="width: 100%; padding: 10px;" onclick="requestStateFromHost()">🔄 重新向講師同步題目</button>
+            <button class="btn btn-outline btn-sm" style="width: 100%; padding: 10px;" onclick="requestStateFromHost()">🔄 重新同步最新題目</button>
         </div>
 
         <!-- 學生個人重新填答按鈕 -->
@@ -237,54 +237,64 @@
 <script>
     const LETTERS = ['A', 'B', 'C', 'D'];
     const STORAGE_KEY_QUESTIONS = 'classroom_quiz_saved_questions_v1';
-    const MAX_QUESTION_CHARS = 180;
-    const MAX_OPTION_CHARS = 80;
+    const MAX_QUESTION_CHARS = 220;
+    const MAX_OPTION_CHARS = 100;
 
-    const PEER_CONFIG = {
-        debug: 1,
-        pingInterval: 5000,
-        config: {
-            iceServers: [
-                { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:stun1.l.google.com:19302' },
-                { urls: 'stun:stun2.l.google.com:19302' },
-                { urls: 'stun:stun3.l.google.com:19302' },
-                { urls: 'stun:stun4.l.google.com:19302' },
-                { urls: 'stun:global.stun.twilio.com:3478' }
-            ],
-            iceCandidatePoolSize: 10
-        }
-    };
+    // 免費公開 MQTT over WebSocket 伺服器清單（主線 EMQX + 備援 HiveMQ）
+    const MQTT_BROKERS = [
+        { name: 'EMQX Cloud', url: 'wss://broker.emqx.io:8084/mqtt' },
+        { name: 'HiveMQ Public', url: 'wss://broker.hivemq.com:8884/mqtt' }
+    ];
 
     let questions = [];
     let currentQIndex = 0;
     let isLocked = false;
     let currentJoinUrl = '';
 
-    let peer = null;
-    let hostPeerId = null;
-    let hostReconnectTimer = null;
+    let mqttClient = null;
+    let currentBrokerIndex = 0;
+    let brokerFailCount = 0;
+    let roomId = '';
     let hostHeartbeatTimer = null;
     let broadcastThrottleTimer = null;
     let pendingBroadcastFull = false;
     let pendingBroadcastVotes = false;
-    const connectedStudents = new Map();
+    const onlineStudents = new Map(); // studentUuid -> lastSeen timestamp
 
-    let hostConnection = null;
-    let targetHostIdGlobal = null;
+    // 學生端變數
+    let targetRoomId = '';
     let studentChoices = [];
     let studentVoteSeq = 0;
-    let studentReconnectTimer = null;
-    let studentReconnectAttempts = 0;
     let studentHeartbeatTimer = null;
     let studentSyncRetryTimer = null;
-    let lastPongTime = 0;
+    let studentCurrentQIndex = -1;
+    let studentCurrentRound = -1;
+    let latestState = null;
 
-    // 清理多餘換行與超長字元，避免 WebRTC 單筆封包過大導致連線或傳送失敗
+    function getTopics(rid) {
+        const prefix = 'classquiz/v1/' + rid;
+        return {
+            state: prefix + '/state',          // 講師發布目前題目狀態 (retained)
+            votes: prefix + '/votes',          // 講師廣播即時票數統計
+            presence: prefix + '/presence',    // 學生上線/心跳/請求同步
+            vote: prefix + '/vote',            // 學生送出複選答案
+            ackPrefix: prefix + '/ack/'        // 講師單獨確認某學生答案 (ack/<studentUuid>)
+        };
+    }
+
     function sanitizePacketText(str, maxLen) {
         const cleaned = String(str || '').replace(/\r?\n+/g, ' ').trim();
         if (cleaned.length <= maxLen) return cleaned;
         return cleaned.slice(0, maxLen) + '…';
+    }
+
+    function getOrCreateRoomId() {
+        let rid = sessionStorage.getItem('quiz_mqtt_room_id');
+        if (!rid) {
+            rid = 'rm_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 8);
+            sessionStorage.setItem('quiz_mqtt_room_id', rid);
+        }
+        return rid;
     }
 
     function getOrCreateStudentUuid() {
@@ -296,6 +306,7 @@
         return uid;
     }
 
+    // ================= 題庫本機儲存與編輯 =================
     function saveQuestionsToStorage() {
         try {
             const serializable = questions.map(function(q) {
@@ -439,43 +450,80 @@
         document.getElementById('batch-import-box').classList.toggle('hidden');
     }
 
+    function cleanImportedLine(line) {
+        return line
+            .replace(/^[`"'「『]+|[`"'」』]+$/g, '')
+            .replace(/^\s*(?:[-*•]+|\d+[.)、])\s*/g, '')
+            .replace(/｜/g, '|')
+            .trim();
+    }
+
     function applyBatchImport() {
-        const raw = document.getElementById('batch-textarea').value.trim();
-        if (!raw) return;
-        const lines = raw.split('\n').filter(function(l) { return l.trim() !== ''; });
+        const raw = document.getElementById('batch-textarea').value;
+        if (!raw || !raw.trim()) return;
+
+        const rawLines = raw.split(/\r?\n/);
         const parsed = [];
-        lines.forEach(function(line) {
-            const parts = line.split('|').map(function(p) { return p.trim(); });
-            if (parts.length >= 5) {
+        const invalidLines = [];
+
+        rawLines.forEach(function(origLine, idx) {
+            const cleaned = cleanImportedLine(origLine);
+            if (!cleaned) return;
+
+            const parts = cleaned.split('|').map(function(p) {
+                return p.replace(/^[`"'「『]+|[`"'」』]+$/g, '').trim();
+            });
+
+            if (parts.length >= 5 && parts[0]) {
                 parsed.push({
                     text: parts[0],
-                    options: [parts[1], parts[2], parts[3], parts[4]],
+                    options: [
+                        parts[1] || '',
+                        parts[2] || '',
+                        parts[3] || '',
+                        parts[4] || ''
+                    ],
                     studentVotes: {},
                     voteSeqMap: {},
                     round: 1
                 });
+            } else {
+                invalidLines.push('第 ' + (idx + 1) + ' 行：' + origLine.trim());
             }
         });
-        if (parsed.length > 0) {
+
+        if (parsed.length > 0 && invalidLines.length === 0) {
             questions = parsed;
             saveQuestionsToStorage();
             renderSetupList();
             toggleBatchImport();
             alert('成功匯入 ' + parsed.length + ' 道題目！');
+        } else if (parsed.length > 0 && invalidLines.length > 0) {
+            alert(
+                '已解析出 ' + parsed.length + ' 題，但以下行數格式不符（需為：題目 | 選項A | 選項B | 選項C | 選項D）：\n\n' +
+                invalidLines.slice(0, 5).join('\n') +
+                '\n\n請修正這些行後再按一次套用。'
+            );
         } else {
-            alert('格式無法辨識，請確認每行皆包含「題目 | 選項A | 選項B | 選項C | 選項D」');
+            alert(
+                '格式無法辨識，請確認每行皆包含「題目 | 選項A | 選項B | 選項C | 選項D」（共 4 個 | 分隔）。\n' +
+                (invalidLines.length > 0 ? '\n問題行：\n' + invalidLines.slice(0, 3).join('\n') : '')
+            );
         }
     }
 
+    // 判斷進入講師模式或學生模式
     const urlParams = new URLSearchParams(window.location.search);
-    const hostIdParam = urlParams.get('host');
-    if (hostIdParam) {
-        initStudentMode(hostIdParam);
+    const roomParam = urlParams.get('room') || urlParams.get('host');
+    const brokerParam = parseInt(urlParams.get('b') || '0', 10);
+
+    if (roomParam) {
+        initStudentMode(roomParam, isNaN(brokerParam) ? 0 : brokerParam);
     } else {
         initDefaultQuestions();
     }
 
-    // ================= 講師端邏輯 =================
+    // ================= 講師端 MQTT 邏輯 =================
     function setHostStatus(statusType, text) {
         const el = document.getElementById('host-server-status');
         if (!el) return;
@@ -531,155 +579,145 @@
         }
     }
 
-    function initHostPeer() {
-        if (window.location.protocol === 'file:') {
-            setHostStatus('offline', '🔴 目前為本機檔案模式，學生無法連線');
-            alert('提醒：目前網址為 file:// 本機模式，手機掃描 QR Code 無法連線。請透過 HTTP/HTTPS 伺服器（例如 GitHub Pages 或 Live Server）開啟本頁。');
-        }
+    function updateJoinQrWithBroker() {
+        const baseUrl = window.location.href.split('?')[0].split('#')[0];
+        const joinUrl = baseUrl + '?room=' + encodeURIComponent(roomId) + '&b=' + currentBrokerIndex;
+        renderQrCodes(joinUrl);
+    }
 
-        if (peer && !peer.destroyed) {
-            if (peer.disconnected) {
-                setHostStatus('reconnecting', '🟡 正在重新連線至伺服器...');
-                peer.reconnect();
-            }
+    function initHostMqtt() {
+        roomId = getOrCreateRoomId();
+        updateJoinQrWithBroker();
+
+        if (mqttClient && mqttClient.connected) {
+            loadQuestion(currentQIndex);
             return;
         }
 
-        const savedHostId = sessionStorage.getItem('quiz_host_peer_id');
-        peer = savedHostId ? new Peer(savedHostId, PEER_CONFIG) : new Peer(PEER_CONFIG);
-
-        peer.on('open', function(id) {
-            hostPeerId = id;
-            sessionStorage.setItem('quiz_host_peer_id', id);
-            setHostStatus('online', '🟢 連線服務就緒');
-
-            const baseUrl = window.location.href.split('?')[0].split('#')[0];
-            const joinUrl = baseUrl + '?host=' + encodeURIComponent(id);
-            renderQrCodes(joinUrl);
-            loadQuestion(currentQIndex);
-        });
-
-        peer.on('connection', function(conn) {
-            setupIncomingStudentConn(conn);
-        });
-
-        peer.on('disconnected', function() {
-            setHostStatus('reconnecting', '🟡 網路波動，自動重連中...');
-            scheduleHostReconnect();
-        });
-
-        peer.on('error', function(err) {
-            console.warn('[Host Peer Error]', err.type, err);
-            if (err.type === 'unavailable-id') {
-                sessionStorage.removeItem('quiz_host_peer_id');
-                try { peer.destroy(); } catch (e) {}
-                peer = null;
-                setTimeout(initHostPeer, 500);
-            } else if (err.type === 'network' || err.type === 'server-error' || err.type === 'socket-error' || err.type === 'socket-closed') {
-                setHostStatus('reconnecting', '🟡 連線異常，自動重連中...');
-                scheduleHostReconnect();
-            }
-        });
+        connectHostToBroker(currentBrokerIndex);
 
         if (hostHeartbeatTimer) clearInterval(hostHeartbeatTimer);
         hostHeartbeatTimer = setInterval(function() {
             const now = Date.now();
             let changed = false;
-            connectedStudents.forEach(function(info, uid) {
-                if (!info.conn || !info.conn.open || (now - info.lastSeen > 25000)) {
-                    try { if (info.conn) info.conn.close(); } catch (e) {}
-                    connectedStudents.delete(uid);
+            onlineStudents.forEach(function(lastSeen, uid) {
+                if (now - lastSeen > 25000) {
+                    onlineStudents.delete(uid);
                     changed = true;
-                } else {
-                    try {
-                        info.conn.send({ type: 'PING', ts: now });
-                    } catch (e) {}
                 }
             });
             if (changed) {
                 updateOnlineCount();
                 renderHostChart();
             }
-        }, 8000);
+        }, 6000);
     }
 
-    function scheduleHostReconnect() {
-        if (hostReconnectTimer) return;
-        hostReconnectTimer = setTimeout(function() {
-            hostReconnectTimer = null;
-            if (!peer || peer.destroyed) {
-                initHostPeer();
-            } else if (peer.disconnected) {
-                try {
-                    peer.reconnect();
-                } catch (e) {
-                    try { peer.destroy(); } catch (ex) {}
-                    peer = null;
-                    initHostPeer();
-                }
-            }
-        }, 2000);
-    }
+    function connectHostToBroker(brokerIdx) {
+        currentBrokerIndex = brokerIdx % MQTT_BROKERS.length;
+        const broker = MQTT_BROKERS[currentBrokerIndex];
+        const topics = getTopics(roomId);
 
-    function setupIncomingStudentConn(conn) {
-        let boundStudentUuid = null;
+        setHostStatus('reconnecting', '🟡 連線 ' + broker.name + ' 中...');
+        updateJoinQrWithBroker();
 
-        conn.on('open', function() {
-            sendStateToStudent(conn, null);
+        if (mqttClient) {
+            try { mqttClient.end(true); } catch (e) {}
+            mqttClient = null;
+        }
+
+        const clientId = 'host_' + roomId + '_' + Math.random().toString(36).substring(2, 7);
+        mqttClient = mqtt.connect(broker.url, {
+            clientId: clientId,
+            clean: true,
+            connectTimeout: 8000,
+            reconnectPeriod: 2500,
+            keepalive: 25
         });
 
-        conn.on('data', function(msg) {
+        mqttClient.on('connect', function() {
+            brokerFailCount = 0;
+            setHostStatus('online', '🟢 MQTT 就緒 (' + broker.name + ')');
+            mqttClient.subscribe([topics.presence, topics.vote], { qos: 0 }, function(err) {
+                if (!err) {
+                    loadQuestion(currentQIndex);
+                }
+            });
+        });
+
+        mqttClient.on('reconnect', function() {
+            setHostStatus('reconnecting', '🟡 網路波動，MQTT 自動重連中...');
+        });
+
+        mqttClient.on('offline', function() {
+            setHostStatus('offline', '🔴 連線暫時中斷，重連中...');
+        });
+
+        mqttClient.on('error', function(err) {
+            console.warn('[Host MQTT Error]', err);
+            brokerFailCount++;
+            if (brokerFailCount >= 3 && MQTT_BROKERS.length > 1) {
+                brokerFailCount = 0;
+                const nextIdx = (currentBrokerIndex + 1) % MQTT_BROKERS.length;
+                connectHostToBroker(nextIdx);
+            }
+        });
+
+        mqttClient.on('message', function(topic, payloadBuf) {
+            let msg;
+            try {
+                msg = JSON.parse(payloadBuf.toString());
+            } catch (e) {
+                return;
+            }
             if (!msg || typeof msg !== 'object') return;
             const now = Date.now();
 
-            if (msg.type === 'HELLO' || msg.type === 'REQUEST_STATE' || msg.type === 'PING') {
-                const uid = msg.studentUuid || conn.peer;
-                boundStudentUuid = uid;
-
-                const existing = connectedStudents.get(uid);
-                if (existing && existing.conn && existing.conn !== conn) {
-                    try { existing.conn.close(); } catch (e) {}
-                }
-                connectedStudents.set(uid, { conn: conn, lastSeen: now });
+            if (topic === topics.presence) {
+                const uid = msg.studentUuid;
+                if (!uid) return;
+                onlineStudents.set(uid, now);
                 updateOnlineCount();
                 renderHostChart();
 
-                if (msg.type === 'HELLO' || msg.type === 'REQUEST_STATE') {
+                if (msg.action === 'JOIN' || msg.action === 'SYNC_REQ') {
                     const q = questions[currentQIndex];
                     const existingChoices = q.studentVotes[uid] || [];
-                    sendStateToStudent(conn, existingChoices);
-                } else if (msg.type === 'PING') {
-                    try { conn.send({ type: 'PONG', ts: msg.ts }); } catch (e) {}
+                    sendAckToStudent(uid, {
+                        qIndex: currentQIndex,
+                        round: q.round || 1,
+                        seq: q.voteSeqMap[uid] || 0,
+                        confirmedChoices: existingChoices,
+                        syncOnly: true
+                    });
+                    broadcastFullState(true);
                 }
                 return;
             }
 
-            if (msg.type === 'PONG') {
-                if (boundStudentUuid && connectedStudents.has(boundStudentUuid)) {
-                    connectedStudents.get(boundStudentUuid).lastSeen = now;
-                }
-                return;
-            }
-
-            if (msg.type === 'VOTE_MULTI') {
-                const uid = msg.studentUuid || boundStudentUuid || conn.peer;
-                boundStudentUuid = uid;
-                connectedStudents.set(uid, { conn: conn, lastSeen: now });
+            if (topic === topics.vote) {
+                const uid = msg.studentUuid;
+                if (!uid) return;
+                onlineStudents.set(uid, now);
 
                 const q = questions[currentQIndex];
                 const incomingRound = msg.round || 1;
                 const currentRound = q.round || 1;
 
                 if (msg.qIndex !== currentQIndex || incomingRound !== currentRound || isLocked) {
-                    sendStateToStudent(conn, q.studentVotes[uid] || []);
+                    sendAckToStudent(uid, {
+                        qIndex: currentQIndex,
+                        round: currentRound,
+                        seq: q.voteSeqMap[uid] || 0,
+                        confirmedChoices: q.studentVotes[uid] || [],
+                        syncOnly: true
+                    });
                     return;
                 }
 
                 const seq = typeof msg.seq === 'number' ? msg.seq : 0;
                 const lastSeq = q.voteSeqMap[uid] || 0;
-                if (seq < lastSeq) {
-                    return;
-                }
+                if (seq < lastSeq) return;
                 q.voteSeqMap[uid] = seq;
 
                 const rawChoices = Array.isArray(msg.choices) ? msg.choices : [];
@@ -693,42 +731,26 @@
                     q.studentVotes[uid] = cleanChoices;
                 }
 
-                try {
-                    conn.send({
-                        type: 'VOTE_ACK',
-                        qIndex: currentQIndex,
-                        round: currentRound,
-                        seq: seq,
-                        confirmedChoices: cleanChoices
-                    });
-                } catch (e) {}
+                sendAckToStudent(uid, {
+                    qIndex: currentQIndex,
+                    round: currentRound,
+                    seq: seq,
+                    confirmedChoices: cleanChoices
+                });
 
                 updateOnlineCount();
                 renderHostChart();
                 scheduleThrottledBroadcast(false);
             }
         });
+    }
 
-        conn.on('close', function() {
-            if (boundStudentUuid && connectedStudents.has(boundStudentUuid)) {
-                const info = connectedStudents.get(boundStudentUuid);
-                if (info.conn === conn) {
-                    connectedStudents.delete(boundStudentUuid);
-                    updateOnlineCount();
-                    renderHostChart();
-                }
-            }
-        });
-
-        conn.on('error', function() {
-            if (boundStudentUuid && connectedStudents.has(boundStudentUuid)) {
-                const info = connectedStudents.get(boundStudentUuid);
-                if (info.conn === conn) {
-                    connectedStudents.delete(boundStudentUuid);
-                    updateOnlineCount();
-                }
-            }
-        });
+    function sendAckToStudent(uid, data) {
+        if (!mqttClient || !mqttClient.connected || !roomId || !uid) return;
+        const topics = getTopics(roomId);
+        try {
+            mqttClient.publish(topics.ackPrefix + uid, JSON.stringify(data), { qos: 0, retain: false });
+        } catch (e) {}
     }
 
     function startSession() {
@@ -740,25 +762,11 @@
         document.getElementById('host-setup').classList.add('hidden');
         document.getElementById('host-live').classList.remove('hidden');
 
-        if (!peer || peer.destroyed) {
-            initHostPeer();
-        } else {
-            if (peer.disconnected) peer.reconnect();
-            loadQuestion(currentQIndex);
-        }
-    }
-
-    function getActiveStudentCount() {
-        let count = 0;
-        connectedStudents.forEach(function(info) {
-            if (info.conn && info.conn.open) count++;
-        });
-        return count;
+        initHostMqtt();
     }
 
     function updateOnlineCount() {
-        const active = getActiveStudentCount();
-        document.getElementById('online-count').innerText = '線上學生：' + active + ' 人';
+        document.getElementById('online-count').innerText = '線上學生：' + onlineStudents.size + ' 人';
     }
 
     function backToSetup() {
@@ -802,7 +810,7 @@
             nextBtn.innerText = '➡️ 進入下一題';
         }
         renderHostChart();
-        broadcastFullState();
+        broadcastFullState(true);
     }
 
     function lockVoting() {
@@ -816,7 +824,7 @@
 
         const stats = getVoteStats(q);
         const totalVoters = stats.totalVoters;
-        const activeStudents = Math.max(getActiveStudentCount(), totalVoters);
+        const activeStudents = Math.max(onlineStudents.size, totalVoters);
         const responseRate = activeStudents === 0 ? 0 : Math.min(100, Math.round((totalVoters / activeStudents) * 100));
 
         const banner = document.getElementById('summary-banner');
@@ -824,7 +832,7 @@
         banner.classList.remove('hidden');
 
         renderHostChart();
-        broadcastFullState();
+        broadcastFullState(true);
     }
 
     function nextQuestion() {
@@ -870,7 +878,7 @@
         const stats = getVoteStats(q);
         const totalVoters = stats.totalVoters;
         const optionCounts = stats.optionCounts;
-        const activeStudents = Math.max(getActiveStudentCount(), totalVoters);
+        const activeStudents = Math.max(onlineStudents.size, totalVoters);
         const responseRate = activeStudents === 0 ? 0 : Math.min(100, Math.round((totalVoters / activeStudents) * 100));
 
         document.getElementById('total-voters').innerText = totalVoters;
@@ -895,10 +903,10 @@
         });
     }
 
-    function getPayloadForStudent(yourChoices) {
+    function getStatePayload() {
         const q = questions[currentQIndex];
         const stats = getVoteStats(q);
-        const payload = {
+        return {
             qIndex: currentQIndex,
             round: q.round || 1,
             totalQ: questions.length,
@@ -908,25 +916,11 @@
             }),
             totalVoters: stats.totalVoters,
             optionCounts: stats.optionCounts,
-            isLocked: isLocked
+            isLocked: isLocked,
+            ts: Date.now()
         };
-        if (Array.isArray(yourChoices)) {
-            payload.yourChoices = yourChoices;
-        }
-        return payload;
     }
 
-    function sendStateToStudent(conn, yourChoices) {
-        if (conn && conn.open) {
-            try {
-                conn.send({ type: 'SYNC_STATE', data: getPayloadForStudent(yourChoices) });
-            } catch (e) {
-                console.warn('[Send State Error]', e);
-            }
-        }
-    }
-
-    // 放寬為 250ms 節流合併，避免字數較多或多人同時作答時通道壅塞
     function scheduleThrottledBroadcast(isFull) {
         if (isFull) pendingBroadcastFull = true;
         else pendingBroadcastVotes = true;
@@ -937,65 +931,63 @@
             if (pendingBroadcastFull) {
                 pendingBroadcastFull = false;
                 pendingBroadcastVotes = false;
-                broadcastFullState();
+                broadcastFullState(true);
             } else if (pendingBroadcastVotes) {
                 pendingBroadcastVotes = false;
                 broadcastVotesUpdate();
             }
-        }, 250);
+        }, 200);
     }
 
-    function broadcastFullState() {
-        const q = questions[currentQIndex];
-        connectedStudents.forEach(function(info, uid) {
-            if (info.conn && info.conn.open) {
-                const userChoices = q.studentVotes[uid] || [];
-                sendStateToStudent(info.conn, userChoices);
-            }
-        });
+    function broadcastFullState(retainFlag) {
+        if (!mqttClient || !mqttClient.connected || !roomId) return;
+        const topics = getTopics(roomId);
+        const payload = JSON.stringify(getStatePayload());
+        try {
+            mqttClient.publish(topics.state, payload, { qos: 1, retain: retainFlag !== false });
+        } catch (e) {
+            console.warn('[Publish State Error]', e);
+        }
     }
 
-    // 後續投票更新僅傳送精簡統計數字，不重複夾帶長題目與長選項文字
     function broadcastVotesUpdate() {
+        if (!mqttClient || !mqttClient.connected || !roomId) return;
+        const topics = getTopics(roomId);
         const q = questions[currentQIndex];
         const stats = getVoteStats(q);
         const msgObj = {
-            type: 'VOTES_UPDATE',
             qIndex: currentQIndex,
             round: q.round || 1,
             totalVoters: stats.totalVoters,
             optionCounts: stats.optionCounts
         };
-        connectedStudents.forEach(function(info) {
-            if (info.conn && info.conn.open) {
-                try {
-                    info.conn.send(msgObj);
-                } catch (e) {}
-            }
-        });
+        try {
+            mqttClient.publish(topics.votes, JSON.stringify(msgObj), { qos: 0, retain: false });
+        } catch (e) {}
+        // 同步更新 retained state，確保晚進來的學生拿到最新票數
+        broadcastFullState(true);
     }
 
+    // 分頁切回前景時自動確保連線與同步
     document.addEventListener('visibilitychange', function() {
         if (document.visibilityState === 'visible') {
-            if (hostIdParam) {
-                if (!hostConnection || !hostConnection.open) {
+            if (roomParam) {
+                if (!mqttClient || !mqttClient.connected) {
                     manualStudentReconnect();
                 } else {
-                    requestStateFromHost();
+                    sendStudentPresence('SYNC_REQ');
                 }
-            } else if (peer && !document.getElementById('host-live').classList.contains('hidden')) {
-                if (peer.disconnected) {
-                    scheduleHostReconnect();
+            } else if (mqttClient && !document.getElementById('host-live').classList.contains('hidden')) {
+                if (!mqttClient.connected) {
+                    mqttClient.reconnect();
+                } else {
+                    broadcastFullState(true);
                 }
             }
         }
     });
 
-    // ================= 學生端邏輯 =================
-    let studentCurrentQIndex = -1;
-    let studentCurrentRound = -1;
-    let latestState = null;
-
+    // ================= 學生端 MQTT 邏輯 =================
     function setStudentConnUI(state, text) {
         const statusEl = document.getElementById('student-conn-status');
         const barEl = document.getElementById('student-reconnect-bar');
@@ -1011,26 +1003,31 @@
         } else {
             statusEl.className = 'conn-badge offline';
             statusEl.innerText = text || '🔴 連線中斷';
-            msgEl.innerText = '⚠️ 與講師端連線中斷，系統正在自動重連...';
+            msgEl.innerText = '⚠️ 網路暫時中斷，系統正在自動重連...';
             barEl.classList.remove('hidden');
         }
     }
 
-    function requestStateFromHost() {
-        if (hostConnection && hostConnection.open) {
-            try {
-                hostConnection.send({
-                    type: 'REQUEST_STATE',
-                    studentUuid: getOrCreateStudentUuid()
-                });
-            } catch (e) {
-                scheduleStudentReconnect();
-            }
-        }
+    function sendStudentPresence(actionType) {
+        if (!mqttClient || !mqttClient.connected || !targetRoomId) return;
+        const topics = getTopics(targetRoomId);
+        try {
+            mqttClient.publish(topics.presence, JSON.stringify({
+                studentUuid: getOrCreateStudentUuid(),
+                action: actionType || 'PING',
+                ts: Date.now()
+            }), { qos: 0, retain: false });
+        } catch (e) {}
     }
 
-    function initStudentMode(targetHostId) {
-        targetHostIdGlobal = targetHostId;
+    function requestStateFromHost() {
+        sendStudentPresence('SYNC_REQ');
+    }
+
+    function initStudentMode(rid, brokerIdx) {
+        targetRoomId = decodeURIComponent(rid).trim();
+        currentBrokerIndex = brokerIdx % MQTT_BROKERS.length;
+
         document.getElementById('host-setup').classList.add('hidden');
         document.getElementById('student-view').classList.remove('hidden');
 
@@ -1040,134 +1037,80 @@
                 document.getElementById('student-sync-wrap').classList.remove('hidden');
                 requestStateFromHost();
             }
-        }, 3000);
+        }, 2500);
 
-        connectStudentPeer();
+        connectStudentMqtt(currentBrokerIndex);
 
         if (studentHeartbeatTimer) clearInterval(studentHeartbeatTimer);
         studentHeartbeatTimer = setInterval(function() {
-            if (hostConnection && hostConnection.open) {
-                try {
-                    hostConnection.send({
-                        type: 'PING',
-                        studentUuid: getOrCreateStudentUuid(),
-                        ts: Date.now()
-                    });
-                    if (!latestState) {
-                        requestStateFromHost();
-                    }
-                } catch (e) {
-                    scheduleStudentReconnect();
-                }
-                if (lastPongTime > 0 && Date.now() - lastPongTime > 16000) {
-                    scheduleStudentReconnect();
-                }
-            } else {
-                scheduleStudentReconnect();
+            if (mqttClient && mqttClient.connected) {
+                sendStudentPresence(latestState ? 'PING' : 'SYNC_REQ');
             }
-        }, 5000);
+        }, 7000);
     }
 
-    function connectStudentPeer() {
-        if (studentReconnectTimer) {
-            clearTimeout(studentReconnectTimer);
-            studentReconnectTimer = null;
+    function connectStudentMqtt(brokerIdx) {
+        currentBrokerIndex = brokerIdx % MQTT_BROKERS.length;
+        const broker = MQTT_BROKERS[currentBrokerIndex];
+        const topics = getTopics(targetRoomId);
+        const myUuid = getOrCreateStudentUuid();
+
+        setStudentConnUI('connecting', '🟡 連線中 (' + broker.name + ')...');
+
+        if (mqttClient) {
+            try { mqttClient.end(true); } catch (e) {}
+            mqttClient = null;
         }
-        setStudentConnUI('connecting', '🟡 正在連線至課堂...');
 
-        if (!peer || peer.destroyed) {
-            peer = new Peer(PEER_CONFIG);
-            peer.on('open', function() {
-                openDataConnToHost();
-            });
-            peer.on('disconnected', function() {
-                setStudentConnUI('offline', '🟡 網路中斷，重連中...');
-                scheduleStudentReconnect();
-            });
-            peer.on('error', function(err) {
-                console.warn('[Student Peer Error]', err.type, err);
-                if (err.type === 'peer-unavailable') {
-                    setStudentConnUI('offline', '🔴 找不到講師房間（請確認講師已開始互動）');
-                    document.getElementById('student-question').innerText = '找不到講師房間，請確認講師端已點擊「開始上課互動」且未關閉分頁。';
-                } else {
-                    setStudentConnUI('offline', '🔴 連線異常，重連中...');
-                }
-                scheduleStudentReconnect();
-            });
-        } else if (peer.disconnected) {
-            try {
-                peer.reconnect();
-                setTimeout(openDataConnToHost, 600);
-            } catch (e) {
-                try { peer.destroy(); } catch (ex) {}
-                peer = null;
-                scheduleStudentReconnect();
-            }
-        } else if (peer.open) {
-            openDataConnToHost();
-        }
-    }
-
-    function openDataConnToHost() {
-        if (!peer || !peer.open || !targetHostIdGlobal) return;
-        if (hostConnection && hostConnection.open) return;
-
-        try {
-            if (hostConnection) hostConnection.close();
-        } catch (e) {}
-
-        const conn = peer.connect(targetHostIdGlobal, { reliable: true });
-        hostConnection = conn;
-
-        const connectTimeout = setTimeout(function() {
-            if (!conn.open) {
-                try { conn.close(); } catch (e) {}
-                scheduleStudentReconnect();
-            }
-        }, 6000);
-
-        conn.on('open', function() {
-            clearTimeout(connectTimeout);
-            studentReconnectAttempts = 0;
-            lastPongTime = Date.now();
-            setStudentConnUI('connected', '🟢 已連線至課堂');
-
-            conn.send({
-                type: 'HELLO',
-                studentUuid: getOrCreateStudentUuid()
-            });
-            setTimeout(function() {
-                if (!latestState) requestStateFromHost();
-            }, 400);
+        const clientId = 'stu_' + myUuid + '_' + Math.random().toString(36).substring(2, 6);
+        mqttClient = mqtt.connect(broker.url, {
+            clientId: clientId,
+            clean: true,
+            connectTimeout: 8000,
+            reconnectPeriod: 2000,
+            keepalive: 25
         });
 
-        conn.on('data', function(msg) {
-            if (!msg || typeof msg !== 'object') return;
-            lastPongTime = Date.now();
+        mqttClient.on('connect', function() {
+            brokerFailCount = 0;
+            setStudentConnUI('connected', '🟢 已連線至課堂');
 
-            if (msg.type === 'PING') {
-                try {
-                    conn.send({ type: 'PONG', studentUuid: getOrCreateStudentUuid(), ts: msg.ts });
-                } catch (e) {}
-                return;
-            }
-
-            if (msg.type === 'PONG') {
-                return;
-            }
-
-            if (msg.type === 'VOTE_ACK') {
-                if (latestState && msg.qIndex === latestState.qIndex && msg.round === (latestState.round || 1)) {
-                    if (msg.seq === studentVoteSeq && Array.isArray(msg.confirmedChoices)) {
-                        studentChoices = msg.confirmedChoices.slice();
-                        renderStudentUI();
-                    }
+            mqttClient.subscribe([topics.state, topics.votes, topics.ackPrefix + myUuid], { qos: 0 }, function(err) {
+                if (!err) {
+                    sendStudentPresence('JOIN');
                 }
+            });
+        });
+
+        mqttClient.on('reconnect', function() {
+            setStudentConnUI('offline', '🟡 網路不穩，自動重連中...');
+        });
+
+        mqttClient.on('offline', function() {
+            setStudentConnUI('offline', '🔴 連線已中斷');
+        });
+
+        mqttClient.on('error', function(err) {
+            console.warn('[Student MQTT Error]', err);
+            brokerFailCount++;
+            if (brokerFailCount >= 3 && MQTT_BROKERS.length > 1) {
+                brokerFailCount = 0;
+                const nextIdx = (currentBrokerIndex + 1) % MQTT_BROKERS.length;
+                connectStudentMqtt(nextIdx);
+            }
+        });
+
+        mqttClient.on('message', function(topic, payloadBuf) {
+            let msg;
+            try {
+                msg = JSON.parse(payloadBuf.toString());
+            } catch (e) {
                 return;
             }
+            if (!msg || typeof msg !== 'object') return;
 
-            if (msg.type === 'SYNC_STATE') {
-                latestState = msg.data;
+            if (topic === topics.state) {
+                latestState = msg;
                 document.getElementById('student-sync-wrap').classList.add('hidden');
                 const incomingRound = latestState.round || 1;
                 const isNewQuestionOrRound = (studentCurrentQIndex !== latestState.qIndex || studentCurrentRound !== incomingRound);
@@ -1176,62 +1119,48 @@
                     studentCurrentQIndex = latestState.qIndex;
                     studentCurrentRound = incomingRound;
                     studentVoteSeq = 0;
-                    studentChoices = Array.isArray(latestState.yourChoices) ? latestState.yourChoices.slice() : [];
-                } else if (Array.isArray(latestState.yourChoices)) {
-                    studentChoices = latestState.yourChoices.slice();
+                    studentChoices = [];
                 }
                 renderStudentUI();
-            } else if (msg.type === 'VOTES_UPDATE' && latestState && msg.qIndex === latestState.qIndex && (msg.round || 1) === (latestState.round || 1)) {
-                latestState.totalVoters = msg.totalVoters;
-                latestState.optionCounts = msg.optionCounts;
-                if (studentChoices.length > 0 || latestState.isLocked) {
-                    renderStudentResultBars();
+                return;
+            }
+
+            if (topic === topics.votes) {
+                if (latestState && msg.qIndex === latestState.qIndex && (msg.round || 1) === (latestState.round || 1)) {
+                    latestState.totalVoters = msg.totalVoters;
+                    latestState.optionCounts = msg.optionCounts;
+                    if (studentChoices.length > 0 || latestState.isLocked) {
+                        renderStudentResultBars();
+                    }
+                }
+                return;
+            }
+
+            if (topic === topics.ackPrefix + myUuid) {
+                if (latestState && msg.qIndex === latestState.qIndex && (msg.round || 1) === (latestState.round || 1)) {
+                    if (msg.syncOnly && Array.isArray(msg.confirmedChoices) && studentChoices.length === 0 && msg.confirmedChoices.length > 0) {
+                        studentChoices = msg.confirmedChoices.slice();
+                        studentVoteSeq = msg.seq || 0;
+                        renderStudentUI();
+                    } else if (msg.seq === studentVoteSeq && Array.isArray(msg.confirmedChoices)) {
+                        studentChoices = msg.confirmedChoices.slice();
+                        renderStudentUI();
+                    }
                 }
             }
         });
-
-        conn.on('close', function() {
-            clearTimeout(connectTimeout);
-            setStudentConnUI('offline', '🔴 連線已中斷');
-            scheduleStudentReconnect();
-        });
-
-        conn.on('error', function() {
-            clearTimeout(connectTimeout);
-            setStudentConnUI('offline', '🔴 連線異常');
-            scheduleStudentReconnect();
-        });
-    }
-
-    function scheduleStudentReconnect() {
-        if (studentReconnectTimer) return;
-        studentReconnectAttempts++;
-        const delay = Math.min(6000, 1200 + studentReconnectAttempts * 700);
-        studentReconnectTimer = setTimeout(function() {
-            studentReconnectTimer = null;
-            connectStudentPeer();
-        }, delay);
     }
 
     function manualStudentReconnect() {
-        if (studentReconnectTimer) {
-            clearTimeout(studentReconnectTimer);
-            studentReconnectTimer = null;
-        }
-        studentReconnectAttempts = 0;
-        if (peer && !peer.destroyed) {
-            try { peer.destroy(); } catch (e) {}
-        }
-        peer = null;
-        hostConnection = null;
-        connectStudentPeer();
+        brokerFailCount = 0;
+        connectStudentMqtt(currentBrokerIndex);
     }
 
     function sendStudentVoteToHost() {
-        if (!latestState || latestState.isLocked) return;
+        if (!latestState || latestState.isLocked || !targetRoomId) return;
         studentVoteSeq++;
+        const topics = getTopics(targetRoomId);
         const payload = {
-            type: 'VOTE_MULTI',
             studentUuid: getOrCreateStudentUuid(),
             qIndex: latestState.qIndex,
             round: latestState.round || 1,
@@ -1239,17 +1168,17 @@
             choices: studentChoices.slice()
         };
 
-        if (hostConnection && hostConnection.open) {
+        if (mqttClient && mqttClient.connected) {
             try {
-                hostConnection.send(payload);
+                mqttClient.publish(topics.vote, JSON.stringify(payload), { qos: 1, retain: false });
             } catch (e) {
-                scheduleStudentReconnect();
+                manualStudentReconnect();
             }
         } else {
             manualStudentReconnect();
             setTimeout(function() {
-                if (hostConnection && hostConnection.open) {
-                    try { hostConnection.send(payload); } catch (e) {}
+                if (mqttClient && mqttClient.connected) {
+                    try { mqttClient.publish(topics.vote, JSON.stringify(payload), { qos: 1, retain: false }); } catch (e) {}
                 }
             }, 1200);
         }
